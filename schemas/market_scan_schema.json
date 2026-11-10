@@ -1,0 +1,306 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://breeze.local/schemas/market_scan_schema.json",
+  "title": "Market Scan Output",
+  "description": "Quant scan output. Straight singles only, offered odds -130 or longer, EV >= 1.5%, quarter-Kelly capped at 2.0u per single and per event. Reports to Captain HZ.",
+  "type": "object",
+  "required": [
+    "timestamp",
+    "slate_date",
+    "opportunities"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "minLength": 1
+    },
+    "slate_date": {
+      "type": "string",
+      "format": "date",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+    },
+    "operating_authority": {
+      "type": "string",
+      "enum": [
+        "Captain HZ"
+      ]
+    },
+    "mode": {
+      "type": "string",
+      "enum": [
+        "DRY_RUN",
+        "MOCK",
+        "LIVE"
+      ]
+    },
+    "ingestion": {
+      "type": "object"
+    },
+    "bankroll_units": {
+      "type": "number",
+      "minimum": 0
+    },
+    "opportunities": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/opportunity"
+      }
+    },
+    "rejections": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/rejection"
+      }
+    }
+  },
+  "definitions": {
+    "opportunity": {
+      "type": "object",
+      "required": [
+        "event",
+        "selection",
+        "market_type",
+        "offered_american",
+        "benchmark_source",
+        "benchmark_american",
+        "fair_probability",
+        "ev_percent",
+        "quarter_kelly_units",
+        "hitl_status",
+        "hitl_reason"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "event": {
+          "type": "string",
+          "minLength": 1
+        },
+        "selection": {
+          "type": "string",
+          "minLength": 1
+        },
+        "market_type": {
+          "type": "string",
+          "enum": [
+            "h2h",
+            "spreads",
+            "totals",
+            "kalshi_binary"
+          ]
+        },
+        "offered_american": {
+          "type": "integer",
+          "minimum": -130
+        },
+        "benchmark_source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "benchmark_american": {
+          "type": "integer"
+        },
+        "fair_probability": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "ev_percent": {
+          "type": "number",
+          "minimum": 1.5
+        },
+        "quarter_kelly_units": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 2.0
+        },
+        "hitl_status": {
+          "type": "string",
+          "enum": [
+            "APPROVED",
+            "PENDING_CAPTAIN_HZ"
+          ]
+        },
+        "hitl_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "league": {
+          "type": "string"
+        },
+        "bet_type": {
+          "type": "string",
+          "enum": [
+            "single"
+          ]
+        },
+        "retail_book": {
+          "type": "string"
+        },
+        "benchmark_opp_american": {
+          "type": "integer"
+        },
+        "fair_american": {
+          "type": "integer"
+        },
+        "fair_probability_power": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "retail_novig_probability": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "exchange_source": {
+          "type": "string"
+        },
+        "exchange_probability": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "exchange_divergence": {
+          "type": "number",
+          "minimum": 0
+        },
+        "raw_quarter_kelly_units": {
+          "type": "number",
+          "minimum": 0
+        },
+        "line_move_points": {
+          "type": "number"
+        },
+        "line_point": {
+          "type": "number"
+        },
+        "commence_time": {
+          "type": "string"
+        },
+        "exchange_ticker": {
+          "type": "string"
+        },
+        "exchange_yes_bid": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 1
+        },
+        "exchange_yes_ask": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 1
+        },
+        "exchange_volume": {
+          "type": "number",
+          "minimum": 0
+        },
+        "pick_id": {
+          "type": "string"
+        },
+        "event_id": {
+          "type": "string"
+        },
+        "sport": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pinnacle_fair_probability": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "fair_probability_odds_ratio": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "sharp_fair_american": {
+          "type": "integer"
+        },
+        "offered_implied_probability": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "value_thesis": {
+          "type": "string"
+        },
+        "model": {
+          "type": "object",
+          "required": [
+            "available",
+            "model_probability",
+            "rest",
+            "injuries",
+            "key_questionable"
+          ],
+          "properties": {
+            "available": {
+              "type": "boolean"
+            },
+            "model_probability": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 1
+            },
+            "projected_home_spread": {
+              "type": "number"
+            },
+            "home_win_prob": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "rest": {
+              "type": "object"
+            },
+            "injuries": {
+              "type": "array"
+            },
+            "key_questionable": {
+              "type": "array"
+            }
+          }
+        }
+      }
+    },
+    "rejection": {
+      "type": "object",
+      "required": [
+        "event",
+        "selection",
+        "reason"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "event": {
+          "type": "string"
+        },
+        "selection": {
+          "type": "string"
+        },
+        "offered_american": {
+          "type": "integer"
+        },
+        "reason": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}
