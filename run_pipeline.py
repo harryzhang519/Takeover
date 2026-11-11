@@ -139,9 +139,10 @@ def do_settle(conn, mock: bool) -> int:
         print(f"bankroll:      {out['bankroll']}")
     origin = db.ORIGIN_MOCK if mock else db.ORIGIN_LIVE
     for p in db.fetch_picks(conn, "origin = ? AND settled_at IS NOT NULL", (origin,))[-10:]:
+        clv = "n/a" if p["clv_percent"] is None else f"{p['clv_percent']:+.2f}%"
         print(f"  {p['pick_id']} {p['selection']:<22} {p['market_type']:<13} "
               f"{p['offered_american']:+5d} close {p['closing_american'] or 'n/a':>5} "
-              f"CLV {'n/a' if p['clv_percent'] is None else f'{p['clv_percent']:+.2f}%':>7}  "
+              f"CLV {clv:>7}  "
               f"{p['result']:<5} {p['net_units'] if p['net_units'] is not None else 0:+.2f}u "
               f"[{p['hitl_status']}]")
     return 0

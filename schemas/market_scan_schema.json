@@ -204,6 +204,31 @@
           "type": "number",
           "minimum": 0
         },
+        "exchange_yes_bid_size_usd": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "exchange_yes_ask_size_usd": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "exchange_pricing_method": {
+          "type": "string"
+        },
+        "exchange_fair_probability": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 1
+        },
         "pick_id": {
           "type": "string"
         },
@@ -275,6 +300,25 @@
             "key_questionable": {
               "type": "array"
             }
+          }
+        },
+        "confidence": {
+          "type": "string",
+          "enum": [
+            "STANDARD",
+            "BOOSTED"
+          ]
+        },
+        "signals": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "canary_evidence": {
+          "type": "array",
+          "items": {
+            "type": "string"
           }
         }
       }
