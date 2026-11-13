@@ -24,8 +24,12 @@ module stay consistent; ``bankroll_journal`` is an append-only audit trail.
 Hard-coded desk mandates (independent of BANKROLL_UNITS):
     * odds floor: -130 American or longer
     * straight singles only
-    * max 2.0u per bet
-    * max 2.0u total open exposure per event_id
+    * max 2.0u per bet; max 1.0u per player-prop pick
+    * per event_id, two independent exposure buckets:
+        game lines (spreads / totals / moneylines / Kalshi)  max 2.0u open
+        player props                                         max 2.0u open
+      and a combined single-game ceiling of 4.0u, so a 2.0u spread never
+      starves the props on the same game (up to two 1.0u props still fit)
 """
 
 from __future__ import annotations
@@ -45,11 +49,17 @@ from src.core.engine import (
     american_to_decimal,
     validate_odds_floor,
 )
+from src.core.prop_model import MAX_PROP_UNITS, PROP_MARKETS, is_prop_market
 
 ODDS_FLOOR_AMERICAN: int = MIN_AMERICAN_ODDS             # -130
 MAX_STAKE_UNITS: float = 2.0
-MAX_EVENT_UNITS: float = 2.0
-SINGLE_MARKETS: frozenset[str] = frozenset({"h2h", "spreads", "totals", "kalshi_binary"})
+MAX_GAME_EVENT_UNITS: float = 2.0                        # game-line bucket, per event_id
+MAX_PROP_EVENT_UNITS: float = 2.0                        # player-prop bucket, per event_id
+MAX_EVENT_UNITS: float = MAX_GAME_EVENT_UNITS + MAX_PROP_EVENT_UNITS   # 4.0u combined
+BUCKET_GAME = db.EXPOSURE_BUCKET_GAME
+BUCKET_PROP = db.EXPOSURE_BUCKET_PROP
+SINGLE_MARKETS: frozenset[str] = frozenset({"h2h", "spreads", "totals", "kalshi_binary",
+                                            *PROP_MARKETS})
 _EPS = 1e-9
 
 STATUS_PENDING = "PENDING"
@@ -130,8 +140,24 @@ def settlement_amounts(result: str, stake: float, offered_decimal: float) -> tup
     raise ValueError("a PENDING position has no settlement amounts")
 
 
-def mandate_violations(pick: dict[str, Any], existing_event_units: float = 0.0) -> list[str]:
-    """Every hard-mandate breach for a candidate position (empty list = compliant)."""
+def exposure_bucket(market_type: str | None) -> str:
+    """Which per-event exposure bucket a market draws on ("game" or "prop")."""
+    return BUCKET_PROP if is_prop_market(market_type) else BUCKET_GAME
+
+
+def bucket_cap(bucket: str) -> float:
+    return MAX_PROP_EVENT_UNITS if bucket == BUCKET_PROP else MAX_GAME_EVENT_UNITS
+
+
+def mandate_violations(pick: dict[str, Any], existing_event_units: float = 0.0,
+                       existing_bucket_units: float | None = None) -> list[str]:
+    """Every hard-mandate breach for a candidate position (empty list = compliant).
+
+    ``existing_event_units`` is the open exposure on the event across both
+    buckets; ``existing_bucket_units`` the part in this pick's own bucket
+    (game lines or props). When it is omitted the combined figure is used,
+    which is the conservative reading.
+    """
     out: list[str] = []
     odds = pick.get("offered_american")
     if odds is None:
@@ -149,9 +175,17 @@ def mandate_violations(pick: dict[str, Any], existing_event_units: float = 0.0) 
         out.append("Stake must be positive")
     elif stake > MAX_STAKE_UNITS + _EPS:
         out.append(f"Stake {stake:.2f}u exceeds {MAX_STAKE_UNITS:.1f}u per-bet cap")
-    if existing_event_units + stake > MAX_EVENT_UNITS + _EPS:
+    elif pick.get("market_type") in PROP_MARKETS and stake > MAX_PROP_UNITS + _EPS:
+        out.append(f"Stake {stake:.2f}u exceeds {MAX_PROP_UNITS:.1f}u per-prop cap")
+    bucket = exposure_bucket(pick.get("market_type"))
+    same = existing_event_units if existing_bucket_units is None else existing_bucket_units
+    label = "player-prop" if bucket == BUCKET_PROP else "game-line"
+    if same + stake > bucket_cap(bucket) + _EPS:
+        out.append(f"Event exposure {same + stake:.2f}u exceeds {bucket_cap(bucket):.1f}u "
+                   f"{label} cap for {pick.get('event_id')}")
+    elif existing_event_units + stake > MAX_EVENT_UNITS + _EPS:
         out.append(f"Event exposure {existing_event_units + stake:.2f}u exceeds "
-                   f"{MAX_EVENT_UNITS:.1f}u cap for {pick.get('event_id')}")
+                   f"{MAX_EVENT_UNITS:.1f}u combined single-game cap for {pick.get('event_id')}")
     return out
 
 
@@ -205,14 +239,25 @@ class Ledger:
         return self._sum("SELECT SUM(kelly_units) FROM ledger_picks WHERE origin = ? AND "
                          "result = 'UNSETTLED' AND hitl_status = ?", (hitl_status,))
 
-    def event_exposure(self, event_id: str, exclude: Iterable[str] = ()) -> float:
-        """Open units (approved + pending) on an event, across this origin."""
+    def event_exposure(self, event_id: str, exclude: Iterable[str] = (),
+                       bucket: str | None = None) -> float:
+        """Open units (approved + pending) on an event, across this origin.
+
+        ``bucket`` ("game" / "prop") restricts to one exposure bucket."""
         excl = tuple(exclude)
         marks = ",".join("?" * len(excl)) or "''"
+        extra, extra_params = db.bucket_sql(bucket)
         return self._sum(
             f"SELECT SUM(kelly_units) FROM ledger_picks WHERE origin = ? AND event_id = ? AND "
             f"result = 'UNSETTLED' AND hitl_status IN ('APPROVED', 'PENDING_CAPTAIN_HZ') AND "
-            f"pick_id NOT IN ({marks})", (event_id, *excl))
+            f"pick_id NOT IN ({marks}){extra}", (event_id, *excl, *extra_params))
+
+    def event_exposures(self, pick: dict[str, Any]) -> tuple[float, float]:
+        """(combined, own-bucket) open units on the pick's event, excluding the pick."""
+        excl = [pick["pick_id"]]
+        return (self.event_exposure(pick["event_id"], exclude=excl),
+                self.event_exposure(pick["event_id"], exclude=excl,
+                                    bucket=exposure_bucket(pick.get("market_type"))))
 
     def cash(self) -> float:
         return self.capital() + self.realized_pnl() - self.open_exposure()
@@ -263,8 +308,7 @@ class Ledger:
     # ---- positions -----------------------------------------------------
     def check_position(self, pick: dict[str, Any]) -> list[str]:
         """Mandate + bankroll problems for a would-be position (empty = acceptable)."""
-        existing = self.event_exposure(pick["event_id"], exclude=[pick["pick_id"]])
-        problems = mandate_violations(pick, existing)
+        problems = mandate_violations(pick, *self.event_exposures(pick))
         stake = float(pick.get("kelly_units") or 0.0)
         if pick.get("hitl_status", HITL_APPROVED) != HITL_REJECTED and \
                 stake > self.available_cash() + _EPS:
@@ -331,7 +375,7 @@ class Ledger:
             return p
         if p["hitl_status"] != HITL_PENDING:
             raise ValueError(f"{pick_id} is {p['hitl_status']}; only pending picks can be approved")
-        problems = mandate_violations(p, self.event_exposure(p["event_id"], exclude=[pick_id]))
+        problems = mandate_violations(p, *self.event_exposures(p))
         if problems:
             raise MandateViolation("; ".join(problems))
         # its own reservation is released on approval, so compare against cash net of others

@@ -668,7 +668,9 @@ def _finalize(conn: sqlite3.Connection, raw: list[dict[str, Any]], stats: ScanSt
         scan_ids = [c["pick_id"] for c in cands]
         allocated = 0.0
         for c in cands:
-            existing = db.open_event_exposure(conn, event_id, exclude=scan_ids) + allocated
+            # Game lines draw on their own 2.0u per-event bucket; props have a separate one.
+            existing = db.open_event_exposure(conn, event_id, exclude=scan_ids,
+                                              bucket=db.EXPOSURE_BUCKET_GAME) + allocated
             units, status, note = size_position(c["fair"], c["offered_decimal"], existing,
                                                 bankroll)
             label = display_selection(c["market_type"], c["selection"], c["point"])

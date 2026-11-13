@@ -60,7 +60,10 @@ CREATE TABLE IF NOT EXISTS ledger_picks (
     event_id           TEXT NOT NULL,
     event_name         TEXT,
     market_type        TEXT NOT NULL
-        CHECK (market_type IN ('h2h', 'spreads', 'totals', 'kalshi_binary')),
+        CHECK (market_type IN ('h2h', 'spreads', 'totals', 'kalshi_binary',
+                               'player_points', 'player_rebounds', 'player_assists',
+                               'player_threes', 'player_pass_yds', 'player_rush_yds',
+                               'player_reception_yds', 'player_receptions')),
     selection          TEXT NOT NULL,
     line_point         REAL,
     bookmaker          TEXT,
@@ -156,6 +159,66 @@ CREATE TABLE IF NOT EXISTS injury_reports (
 );
 CREATE INDEX IF NOT EXISTS ix_inj_team ON injury_reports (canonical_id, status);
 
+-- Player props: normalized per-game history (NBA game logs / NFL weekly stats).
+CREATE TABLE IF NOT EXISTS player_game_logs (
+    sport            TEXT NOT NULL,
+    player_key       TEXT NOT NULL,      -- normalized name (see prop_stats_fetcher.player_key)
+    game_id          TEXT NOT NULL,
+    player_name      TEXT NOT NULL,
+    canonical_id     TEXT,               -- player's team for that game
+    opponent_id      TEXT,
+    position         TEXT,
+    game_date        TEXT NOT NULL,
+    season           TEXT,
+    minutes          REAL,
+    pts REAL, reb REAL, ast REAL, fg3m REAL, fg3a REAL, fgm REAL, fga REAL,
+    ftm REAL, fta REAL, tov REAL,
+    team_margin      REAL,               -- NBA: final margin from the player's team side
+    game_poss        REAL,               -- NBA: game possessions estimate
+    targets REAL, receptions REAL, rec_yds REAL, air_yards REAL, target_share REAL,
+    air_yards_share REAL, carries REAL, rush_yds REAL, pass_att REAL, completions REAL,
+    pass_yds REAL,
+    fetched_at       TIMESTAMP NOT NULL,
+    PRIMARY KEY (sport, player_key, game_id)
+);
+CREATE INDEX IF NOT EXISTS ix_pgl_player ON player_game_logs (sport, player_key, game_date);
+
+-- Player props: prior-season totals (NBA LeagueDashPlayerStats, one bulk call per season).
+CREATE TABLE IF NOT EXISTS player_season_baselines (
+    sport        TEXT NOT NULL,
+    player_key   TEXT NOT NULL,
+    season       TEXT NOT NULL,
+    player_name  TEXT NOT NULL,
+    gp           REAL, min REAL, pts REAL, reb REAL, ast REAL,
+    fgm REAL, fga REAL, fg3m REAL, fg3a REAL, ftm REAL, fta REAL,
+    fetched_at   TIMESTAMP NOT NULL,
+    PRIMARY KEY (sport, player_key, season)
+);
+
+-- Player props: team pace / defensive allowances (one row per team).
+CREATE TABLE IF NOT EXISTS team_prop_context (
+    canonical_id        TEXT PRIMARY KEY,
+    sport               TEXT NOT NULL,
+    season              TEXT,
+    updated_at          TIMESTAMP NOT NULL,
+    games               INTEGER,
+    pace                REAL,            -- NBA possessions / game
+    drtg                REAL,            -- NBA points allowed / 100 poss
+    allowed_reb_100     REAL,
+    allowed_ast_100     REAL,
+    allowed_fg3m_100    REAL,
+    plays_pg            REAL,            -- NFL neutral-script offensive plays / game
+    def_plays_pg        REAL,
+    pass_pg             REAL,
+    rush_pg             REAL,
+    neutral_pass_rate   REAL,
+    def_pass_ypa        REAL,            -- NFL pass yards allowed / attempt
+    def_rush_ypc        REAL,
+    def_epa_play        REAL,
+    def_pass_epa        REAL,
+    def_rush_epa        REAL
+);
+
 CREATE TABLE IF NOT EXISTS rule_violations (
     pick_id          TEXT PRIMARY KEY REFERENCES ledger_picks (pick_id),
     quarantined_at   TIMESTAMP NOT NULL,
@@ -197,7 +260,7 @@ def _ledger_ddl() -> str:
 
 
 def _rebuild_ledger_if_stale(conn: sqlite3.Connection) -> bool:
-    """Rebuild ledger_picks when its result CHECK predates 'CANCELLED'.
+    """Rebuild ledger_picks when its CHECKs predate 'CANCELLED' or the player-prop markets.
 
     SQLite cannot alter a CHECK constraint, so this follows the documented
     create-copy-drop-rename procedure in one transaction (foreign keys off so
@@ -205,7 +268,7 @@ def _rebuild_ledger_if_stale(conn: sqlite3.Connection) -> bool:
     """
     row = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' "
                        "AND name = 'ledger_picks'").fetchone()
-    if row is None or "'CANCELLED'" in row[0]:
+    if row is None or ("'CANCELLED'" in row[0] and "'player_receptions'" in row[0]):
         return False
     old_cols = [r["name"] for r in conn.execute("PRAGMA table_info(ledger_picks)")]
     ddl = _ledger_ddl().replace("CREATE TABLE IF NOT EXISTS ledger_picks",
@@ -371,15 +434,35 @@ def fetch_picks(conn: sqlite3.Connection, where: str = "1=1",
     return [dict(r) for r in rows]
 
 
+EXPOSURE_BUCKET_GAME = "game"      # spreads / totals / moneylines / Kalshi binaries
+EXPOSURE_BUCKET_PROP = "prop"      # player props
+
+
+def bucket_sql(bucket: str | None) -> tuple[str, tuple[str, ...]]:
+    """SQL fragment (leading ``AND``) + params restricting ledger_picks to one bucket."""
+    if bucket is None:
+        return "", ()
+    from src.core.prop_model import PROP_MARKETS        # lazy: keep storage import-light
+    keys = tuple(PROP_MARKETS)
+    op = {EXPOSURE_BUCKET_PROP: "IN", EXPOSURE_BUCKET_GAME: "NOT IN"}.get(bucket)
+    if op is None:
+        raise ValueError(f"unknown exposure bucket {bucket!r}")
+    return f" AND market_type {op} ({','.join('?' * len(keys))})", keys
+
+
 def open_event_exposure(conn: sqlite3.Connection, event_id: str,
-                        exclude: Iterable[str] = ()) -> float:
-    """Units already committed (unsettled, approved or pending) on an event."""
+                        exclude: Iterable[str] = (), bucket: str | None = None) -> float:
+    """Units already committed (unsettled, approved or pending) on an event.
+
+    ``bucket`` = "game" or "prop" restricts the sum to that exposure bucket;
+    None sums both (the combined single-game total)."""
     excl = tuple(exclude)
     marks = ",".join("?" * len(excl)) or "''"
+    extra, extra_params = bucket_sql(bucket)
     row = conn.execute(
         f"SELECT COALESCE(SUM(kelly_units), 0) FROM ledger_picks WHERE event_id = ? "
         f"AND result = 'UNSETTLED' AND hitl_status IN ('APPROVED', 'PENDING_CAPTAIN_HZ') "
-        f"AND pick_id NOT IN ({marks})", (event_id, *excl)).fetchone()
+        f"AND pick_id NOT IN ({marks}){extra}", (event_id, *excl, *extra_params)).fetchone()
     return float(row[0])
 
 
@@ -420,4 +503,5 @@ def fetch_violations(conn: sqlite3.Connection) -> list[dict[str, Any]]:
 def table_counts(conn: sqlite3.Connection) -> dict[str, int]:
     return {t: int(conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0])
             for t in ("api_cache", "market_snapshots", "ledger_picks", "rule_violations",
-                      "teams_metadata", "team_ratings", "team_schedule", "injury_reports")}
+                      "teams_metadata", "team_ratings", "team_schedule", "injury_reports",
+                      "player_game_logs", "team_prop_context", "player_season_baselines")}

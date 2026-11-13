@@ -1,9 +1,11 @@
 """Discord brief generators.
 
-Turns a schema-validated opportunity list into markdown:
+Turns schema-validated game opportunities and player props into markdown:
+    * ``generate_slate_summary``      -> both pillars side by side
     * ``generate_free_pick``          -> one public Daily Free Pick
-    * ``generate_vip_syndicate_card`` -> the full institutional slate card
-    * ``write_discord_briefs``        -> writes both to the Discord OUTBOX
+    * ``generate_vip_syndicate_card`` -> the full institutional game-line card
+    * ``generate_prop_card``          -> official 1.00u player props
+    * ``write_discord_briefs``        -> writes the unified drop to the Discord OUTBOX
 
 All copy is driven by the numbers in each opportunity dict, so the text
 cannot drift from the math.
@@ -20,8 +22,13 @@ from src.core.engine import (
     DEFAULT_BANKROLL_UNITS,
     american_to_decimal,
 )
+from src.core.ledger import MAX_EVENT_UNITS, MAX_GAME_EVENT_UNITS, MAX_PROP_EVENT_UNITS
+from src.core.prop_model import MIN_PROP_OFFICIAL_UNITS
 
 CAP_UNITS = MAX_STAKE_FRACTION * DEFAULT_BANKROLL_UNITS
+EXPOSURE_RULE = (f"Per game: game lines up to {MAX_GAME_EVENT_UNITS:.1f}u, player props up to "
+                 f"{MAX_PROP_EVENT_UNITS:.1f}u in their own bucket ({MIN_PROP_OFFICIAL_UNITS:.2f}u "
+                 f"each), {MAX_EVENT_UNITS:.1f}u combined ceiling.")
 
 
 def _am(odds: int | None) -> str:
@@ -31,6 +38,76 @@ def _am(odds: int | None) -> str:
 
 def _pct(p: float | None, digits: int = 2) -> str:
     return "n/a" if p is None else f"{p * 100:.{digits}f}%"
+
+
+def prop_units(p: dict) -> float:
+    """Official stake of a prop (``quarter_kelly_units`` for pre-flat-sizing scans)."""
+    return float(p.get("official_units", p.get("quarter_kelly_units")) or 0.0)
+
+
+def generate_slate_summary(opps: list[dict], props: list[dict] | None) -> str:
+    """Both pillars side by side: plays, units and the Captain HZ queue."""
+    def row(name: str, plays: int, units: float, pending: int) -> str:
+        return f"| {name} | {plays} | {units:.2f}u | {pending} |"
+    g_units = sum(o["quarter_kelly_units"] for o in opps)
+    g_pend = sum(o["hitl_status"] != "APPROVED" for o in opps)
+    out = ["## Today's Card", "", "| Pillar | Plays | Units | Pending Captain HZ |",
+           "|---|---|---|---|", row("Game lines", len(opps), g_units, g_pend)]
+    if props is None:
+        out.append("| Player props | off | - | - |")
+        return "\n".join(out)
+    p_units = sum(prop_units(p) for p in props)
+    p_pend = sum(p["hitl_status"] != "APPROVED" for p in props)
+    out += [row("Player props", len(props), p_units, p_pend),
+            row("**Total**", len(opps) + len(props), g_units + p_units, g_pend + p_pend),
+            "", EXPOSURE_RULE]
+    return "\n".join(out)
+
+
+def generate_prop_card(props: list[dict], note: str = "") -> str:
+    """Official player props: projection, line, model edge and 1.00u sizing."""
+    out = ["## Official Player Props", ""]
+    if note:
+        out += [f"> {note}", ""]
+    if not props:
+        out.append("No player prop cleared the model gate today (market EV > 0, z >= 0.65 "
+                   "sigma and shrunk EV >= 4%). No edge, no play.")
+        return "\n".join(out)
+    ordered = sorted(props, key=lambda p: (-p["ev_percent"], p["event"]))
+    units = sum(prop_units(p) for p in ordered)
+    pending = [p for p in ordered if p["hitl_status"] != "APPROVED"]
+    out += [
+        f"Props: {len(ordered)} | Exposure: {units:.2f}u | Pending Captain HZ: {len(pending)} | "
+        f"Sizing: flat {MIN_PROP_OFFICIAL_UNITS:.2f}u standard play",
+        "",
+        "| # | League | Event | Pick | Projection | Line | Delta | Offered | Model % "
+        "| Market fair % | Edge (EV %) | Units | HITL |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+    ]
+    for i, p in enumerate(ordered, 1):
+        out.append(
+            f"| {i} | {p.get('league', '')} | {p['event']} | {p['selection']} | "
+            f"{p['model_projection']:.2f} | {p['side']} {p['line']:g} | {p['delta']:+.2f} | "
+            f"{_am(p['offered_american'])} {p['retail_book']} | "
+            f"{_pct(p['model_fair_probability'])} | {_pct(p['market_fair_probability'])} | "
+            f"+{p['ev_percent']:.2f} | {prop_units(p):.2f} | {p['hitl_status']} |")
+    out += ["", "### Why each prop"]
+    for p in ordered:
+        raw_k = p.get("raw_kelly_units")
+        z = p.get("z_score")
+        out.append(
+            f"- **{p['selection']}** ({p['event']}): model projects "
+            f"{p['model_projection']:.2f} vs the {p['line']:g} line ({p['delta']:+.2f}"
+            + (f", z {z:.2f}" if z is not None else "") + "). Model "
+            f"{_pct(p['model_fair_probability'], 1)} vs market "
+            f"{_pct(p['market_fair_probability'], 1)}; edge +{p['ev_percent']:.2f}% EV after "
+            f"shrinkage. **{prop_units(p):.2f}u**"
+            + (f" (raw Kelly {raw_k:.2f}u, diagnostic)" if raw_k is not None else "") + ".")
+    if pending:
+        out += ["", "### Prop HITL approval queue"]
+        out += [f"- **{p['hitl_status']}** - {p['selection']} ({p['event']}): {p['hitl_reason']}"
+                for p in pending]
+    return "\n".join(out)
 
 
 def select_free_pick(opps: list[dict]) -> dict | None:
@@ -96,7 +173,7 @@ def generate_vip_syndicate_card(opps: list[dict]) -> str:
     ordered = sorted(opps, key=lambda o: -o["ev_percent"])
 
     out = [
-        "## VIP Syndicate Card",
+        "## VIP Syndicate Card - Game Lines",
         "",
         f"Positions: {len(opps)} | Approved: {len(approved)} | "
         f"Pending Captain HZ: {len(pending)} | Approved exposure: {exposure:.2f}u",
@@ -148,17 +225,24 @@ def generate_vip_syndicate_card(opps: list[dict]) -> str:
         "- Straight singles only. Prices -130 or longer only.",
         "- Fair value = conservative of power and odds-ratio de-vig on Pinnacle/Circa, blended "
         "75/25 with the Kalshi mid when available.",
-        f"- Quarter-Kelly off a fixed {DEFAULT_BANKROLL_UNITS:.0f}u baseline, hard cap "
-        f"{CAP_UNITS:.1f}u per position and {CAP_UNITS:.1f}u per event. No escalation on "
-        "heaters, no Martingale on drawdowns.",
+        f"- Game lines: quarter-Kelly off a fixed {DEFAULT_BANKROLL_UNITS:.0f}u baseline, hard "
+        f"cap {CAP_UNITS:.1f}u per position. Player props: flat {MIN_PROP_OFFICIAL_UNITS:.2f}u "
+        "standard play. No escalation on heaters, no Martingale on drawdowns.",
+        f"- {EXPOSURE_RULE}",
         "- Pending positions are not to be placed until Captain HZ signs off.",
     ]
     return "\n".join(out)
 
 
 def write_discord_briefs(opps: list[dict], slate_date: str, out_dir: str | Path,
-                         banner: str = "") -> Path:
-    """Write the free pick and VIP card to ``<out_dir>/<slate_date>_drop.md``."""
+                         banner: str = "", props: list[dict] | None = None,
+                         props_note: str = "") -> Path:
+    """Write the unified drop to ``<out_dir>/<slate_date>_drop.md``.
+
+    Game picks (free pick + VIP card) and official player props sit side by
+    side. ``props=None`` means props were switched off (--no-props); an empty
+    list means the prop scan ran and nothing qualified.
+    """
     pick = select_free_pick(opps)
     free = generate_free_pick(pick) if pick else (
         "## Daily Free Pick\n\nNo approved +EV single today. No price, no play."
@@ -166,9 +250,12 @@ def write_discord_briefs(opps: list[dict], slate_date: str, out_dir: str | Path,
     body = "\n\n".join(filter(None, [
         f"# Discord Drop - {slate_date}",
         banner,
+        generate_slate_summary(opps, props),
         free,
         "---",
         generate_vip_syndicate_card(opps),
+        None if props is None else "---",
+        None if props is None else generate_prop_card(props, props_note),
         render_cards_markdown([o for o in opps if "model" in o]),
         "_21+. Betting involves risk of loss. Nothing here is a guarantee._",
     ]))

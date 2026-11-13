@@ -3,7 +3,8 @@
     * ``generate_x_thread``          -> 5-post thread on the House Money Fallacy
                                         and the Parlay Tax (no emojis, no hype)
     * ``generate_short_form_script`` -> 45-second vertical video script
-    * ``write_social_content``       -> writes both to the social OUTBOX
+    * ``generate_daily_board``       -> today's game picks and player props, side by side
+    * ``write_social_content``       -> writes all three to the social OUTBOX
 
 Parlay Tax figures are computed from the engine at render time, never
 hard-coded.
@@ -127,14 +128,70 @@ def generate_short_form_script(pick_data: dict) -> str:
     return "\n".join(out).rstrip()
 
 
+def _odds(v: int | None) -> str:
+    return "n/a" if v is None else f"{int(v):+d}"
+
+
+def generate_daily_board(opps: list[dict] | None, props: list[dict] | None,
+                         props_note: str = "") -> str:
+    """Today's board: game picks and official 1.00u player props as equal pillars.
+
+    ``props=None`` means props were switched off (--no-props).
+    """
+    out = ["## Today's Board", "",
+           "_Only APPROVED plays may be posted publicly; PENDING_CAPTAIN_HZ plays wait for "
+           "sign-off._", "", "### Game Picks"]
+    games = sorted(opps or [], key=lambda o: -o["ev_percent"])
+    if games:
+        out += ["| Pick | Event | Odds | Fair % | Edge (EV %) | Units | Status |",
+                "|---|---|---|---|---|---|---|"]
+        out += [f"| {o['selection']} | {o['event']} | {_odds(o['offered_american'])} "
+                f"{o.get('retail_book', '')} | {o['fair_probability'] * 100:.1f}% | "
+                f"+{o['ev_percent']:.2f} | {o['quarter_kelly_units']:.2f}u | {o['hitl_status']} |"
+                for o in games]
+    else:
+        out.append("No +EV game line today.")
+    out += ["", "### Player Props"]
+    if props is None:
+        out.append("Player props switched off for this run (--no-props).")
+        return "\n".join(out)
+    if props_note:
+        out.append(f"> {props_note}")
+    ranked = sorted(props, key=lambda p: -p["ev_percent"])
+    if ranked:
+        out += ["| Pick | Event | Projection | Line | Odds | Model % | Edge (EV %) | Units "
+                "| Status |", "|---|---|---|---|---|---|---|---|---|"]
+        for p in ranked:
+            units = float(p.get("official_units", p.get("quarter_kelly_units")) or 0.0)
+            out.append(
+                f"| {p['selection']} | {p['event']} | {p['model_projection']:.2f} "
+                f"({p['delta']:+.2f}) | {p['side']} {p['line']:g} | "
+                f"{_odds(p['offered_american'])} {p.get('retail_book', '')} | "
+                f"{p['model_fair_probability'] * 100:.1f}% | +{p['ev_percent']:.2f} | "
+                f"{units:.2f}u | {p['hitl_status']} |")
+    elif not props_note:
+        out.append("No player prop cleared the model gate today. No edge, no play.")
+    return "\n".join(out)
+
+
 def write_social_content(pick: dict | None, slate_date: str, out_dir: str | Path,
-                         focus: str = "both", banner: str = "") -> Path:
-    """Write the X thread and short-form script to ``<slate_date>_content.md``."""
+                         focus: str = "both", banner: str = "",
+                         opps: list[dict] | None = None, props: list[dict] | None = None,
+                         props_note: str = "") -> Path:
+    """Write the board, X thread and short-form script to ``<slate_date>_content.md``.
+
+    ``opps``/``props`` feed the Today's Board section (game picks and player
+    props together); the board is omitted only when neither is given.
+    """
     script = (generate_short_form_script(pick) if pick
               else "### 45s Short-Form Script\n\nNo approved +EV spot today. No script.")
+    board = (generate_daily_board(opps, props, props_note)
+             if opps is not None or props is not None else None)
     body = "\n\n".join(filter(None, [
         f"# Social Distribution - {slate_date}",
         banner,
+        board,
+        board and "---",
         "## X Thread",
         generate_x_thread(focus),
         "---",

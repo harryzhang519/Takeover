@@ -1,0 +1,430 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://breeze.local/schemas/prop_scan_schema.json",
+  "title": "Player Prop Scan Output",
+  "description": "Model-vs-market player prop scan. Straight singles, offered odds -130 or longer, shrunk EV >= 1.5%, stake capped at 1.0u per prop and 2.0u per event (shared with game picks). Every prop pick requires Captain HZ sign-off.",
+  "type": "object",
+  "required": [
+    "timestamp",
+    "slate_date",
+    "mode",
+    "props",
+    "rejections",
+    "ingestion"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "minLength": 1
+    },
+    "slate_date": {
+      "type": "string",
+      "format": "date",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+    },
+    "operating_authority": {
+      "type": "string",
+      "enum": [
+        "Captain HZ"
+      ]
+    },
+    "mode": {
+      "type": "string",
+      "enum": [
+        "MOCK",
+        "LIVE"
+      ]
+    },
+    "bankroll_units": {
+      "type": "number",
+      "minimum": 0
+    },
+    "config": {
+      "type": "object",
+      "required": [
+        "sigma_threshold",
+        "min_shrunk_ev_percent",
+        "divergence_mode",
+        "pace_method",
+        "model_weight"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "sigma_threshold": {
+          "type": "number",
+          "minimum": 0
+        },
+        "min_shrunk_ev_percent": {
+          "type": "number",
+          "minimum": 0
+        },
+        "divergence_mode": {
+          "type": "string",
+          "enum": [
+            "any",
+            "all"
+          ]
+        },
+        "pace_method": {
+          "type": "string",
+          "enum": [
+            "harmonic",
+            "multiplicative"
+          ]
+        },
+        "continuous_distribution": {
+          "type": "string",
+          "enum": [
+            "gamma",
+            "skew_normal"
+          ]
+        },
+        "quota_floor": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_events": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "model_weight": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "lookahead_hours": {
+          "type": "number",
+          "minimum": 0
+        },
+        "official_prop_units": {
+          "type": "number",
+          "minimum": 0
+        },
+        "max_prop_units": {
+          "type": "number",
+          "minimum": 0
+        },
+        "prop_event_cap_units": {
+          "type": "number",
+          "minimum": 0
+        },
+        "event_total_cap_units": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "ingestion": {
+      "type": "object",
+      "required": [
+        "stats"
+      ],
+      "properties": {
+        "stats": {
+          "type": "object"
+        }
+      }
+    },
+    "props": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/prop"
+      }
+    },
+    "rejections": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/rejection"
+      }
+    }
+  },
+  "definitions": {
+    "probability": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "prop": {
+      "type": "object",
+      "required": [
+        "pick_id",
+        "event",
+        "event_id",
+        "player",
+        "market_type",
+        "side",
+        "line",
+        "selection",
+        "model_projection",
+        "delta",
+        "offered_american",
+        "retail_book",
+        "model_raw_probability",
+        "model_fair_probability",
+        "market_fair_probability",
+        "ev_percent",
+        "official_units",
+        "hitl_status",
+        "hitl_reason"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "pick_id": {
+          "type": "string",
+          "pattern": "^PK-[0-9a-f]{12}$"
+        },
+        "event": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sport": {
+          "type": "string",
+          "enum": [
+            "basketball_nba",
+            "americanfootball_nfl"
+          ]
+        },
+        "league": {
+          "type": "string",
+          "enum": [
+            "NBA",
+            "NFL"
+          ]
+        },
+        "commence_time": {
+          "type": "string"
+        },
+        "player": {
+          "type": "string",
+          "minLength": 1
+        },
+        "team": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "opponent": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "market_type": {
+          "type": "string",
+          "enum": [
+            "player_points",
+            "player_rebounds",
+            "player_assists",
+            "player_threes",
+            "player_pass_yds",
+            "player_rush_yds",
+            "player_reception_yds",
+            "player_receptions"
+          ]
+        },
+        "stat_label": {
+          "type": "string"
+        },
+        "side": {
+          "type": "string",
+          "enum": [
+            "Over",
+            "Under"
+          ]
+        },
+        "line": {
+          "type": "number",
+          "minimum": 0
+        },
+        "selection": {
+          "type": "string",
+          "minLength": 1
+        },
+        "bet_type": {
+          "type": "string",
+          "enum": [
+            "single"
+          ]
+        },
+        "model_projection": {
+          "type": "number",
+          "minimum": 0
+        },
+        "delta": {
+          "type": "number"
+        },
+        "z_score": {
+          "type": "number"
+        },
+        "model_sd": {
+          "type": "number",
+          "minimum": 0
+        },
+        "distribution": {
+          "type": "string",
+          "enum": [
+            "poisson",
+            "negative_binomial",
+            "gamma",
+            "skew_normal"
+          ]
+        },
+        "model_raw_probability": {
+          "$ref": "#/definitions/probability"
+        },
+        "model_blend_probability": {
+          "$ref": "#/definitions/probability"
+        },
+        "model_fair_probability": {
+          "$ref": "#/definitions/probability"
+        },
+        "market_fair_probability": {
+          "$ref": "#/definitions/probability"
+        },
+        "market_benchmark": {
+          "type": "string"
+        },
+        "push_probability": {
+          "$ref": "#/definitions/probability"
+        },
+        "offered_american": {
+          "type": "integer",
+          "minimum": -130
+        },
+        "retail_book": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fair_american": {
+          "type": "integer"
+        },
+        "ev_percent": {
+          "type": "number",
+          "minimum": 1.5
+        },
+        "market_ev_percent": {
+          "type": "number",
+          "minimum": 0
+        },
+        "model_ev_percent": {
+          "type": "number"
+        },
+        "shrinkage_factor": {
+          "$ref": "#/definitions/probability"
+        },
+        "estimation_sigma": {
+          "type": "number",
+          "minimum": 0
+        },
+        "official_units": {
+          "description": "Official stake. Every qualified prop is a flat 1.0u standard play (MIN_PROP_OFFICIAL_UNITS = MAX_PROP_UNITS = 1.0). Props draw on their own 2.0u per-event bucket, independent of game lines, under a 4.0u combined single-game ceiling.",
+          "type": "number",
+          "minimum": 0.01,
+          "maximum": 1.0
+        },
+        "raw_kelly_units": {
+          "description": "Diagnostic only: min(quarter-Kelly, Baker-McHale) units before flat official sizing.",
+          "type": "number",
+          "minimum": 0
+        },
+        "sizing": {
+          "type": "object",
+          "required": [
+            "method",
+            "official_units",
+            "raw_kelly_units"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "method": {
+              "type": "string",
+              "enum": [
+                "flat_official"
+              ]
+            },
+            "official_units": {
+              "type": "number",
+              "minimum": 0.01,
+              "maximum": 1.0
+            },
+            "raw_kelly_units": {
+              "type": "number",
+              "minimum": 0
+            },
+            "full_kelly_fraction": {
+              "type": "number"
+            },
+            "quarter_kelly_fraction": {
+              "type": "number",
+              "minimum": 0
+            },
+            "baker_mchale_fraction": {
+              "type": "number",
+              "minimum": 0
+            },
+            "bankroll_units": {
+              "type": "number",
+              "minimum": 0
+            }
+          }
+        },
+        "hitl_status": {
+          "type": "string",
+          "enum": [
+            "PENDING_CAPTAIN_HZ"
+          ]
+        },
+        "hitl_reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "injury_flag": {
+          "type": "boolean"
+        },
+        "triggers": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "projection": {
+          "type": "object"
+        }
+      }
+    },
+    "rejection": {
+      "type": "object",
+      "required": [
+        "event",
+        "selection",
+        "reason"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "event": {
+          "type": "string"
+        },
+        "selection": {
+          "type": "string"
+        },
+        "offered_american": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "reason": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

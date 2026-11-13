@@ -46,6 +46,7 @@ from src.core.ledger import (
     MAX_STAKE_UNITS,
     Ledger,
     MandateViolation,
+    exposure_bucket,
     mandate_violations,
 )
 from src.core.risk import implied_estimation_sigma, size_bet_under_uncertainty
@@ -197,7 +198,8 @@ def refine_stake(ledger: Ledger, pick: dict[str, Any]) -> float:
     """Quarter-Kelly via risk.py at the event's remaining capacity (never above the ledger stake)."""
     p, dec = float(pick["fair_prob"]), float(pick["offered_decimal"])
     sigma = implied_estimation_sigma(p, dec - 1.0)
-    existing = ledger.event_exposure(pick["event_id"], exclude=[pick["pick_id"]])
+    existing = ledger.event_exposure(pick["event_id"], exclude=[pick["pick_id"]],
+                                     bucket=exposure_bucket(pick.get("market_type")))
     sized = size_bet_under_uncertainty(p, dec, sigma, existing_event_units=existing)
     return min(float(sized["units"]), float(pick["kelly_units"] or 0.0), MAX_STAKE_UNITS)
 

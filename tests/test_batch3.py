@@ -26,6 +26,8 @@ from src.core import orchestrator as orch  # noqa: E402
 from src.core.engine import HITL_APPROVED, HITL_PENDING, HITL_REJECTED  # noqa: E402
 from src.core.ledger import (  # noqa: E402
     MAX_EVENT_UNITS,
+    MAX_GAME_EVENT_UNITS,
+    MAX_PROP_EVENT_UNITS,
     MAX_STAKE_UNITS,
     InsufficientBankroll,
     Ledger,
@@ -155,7 +157,9 @@ class TestStatusAndAmounts:
 
 class TestMandates:
     def test_hard_coded_caps(self):
-        assert MAX_STAKE_UNITS == 2.0 and MAX_EVENT_UNITS == 2.0
+        assert MAX_STAKE_UNITS == 2.0
+        assert MAX_GAME_EVENT_UNITS == 2.0 and MAX_PROP_EVENT_UNITS == 2.0
+        assert MAX_EVENT_UNITS == 4.0                       # combined single-game ceiling
 
     @pytest.mark.parametrize("odds,ok", [(-130, True), (-125, True), (150, True),
                                          (-131, False), (-200, False), (50, False)])
@@ -441,7 +445,7 @@ class TestTradingFloorCycle:
         assert db.count_picks(conn, (db.ORIGIN_LIVE,)) == 0
         for e, units in conn.execute("SELECT event_id, SUM(kelly_units) FROM ledger_picks "
                                      "GROUP BY event_id"):
-            assert units <= MAX_EVENT_UNITS + 1e-9
+            assert units <= MAX_GAME_EVENT_UNITS + 1e-9     # game picks only here
 
 
 # ==========================================================================
