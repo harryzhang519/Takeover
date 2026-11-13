@@ -18,3 +18,8 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+
+# --- Runtime scan outputs (rewritten every pipeline/monitor cycle) ----------
+OUTBOX/market_scans/live_candidates.json
+OUTBOX/market_scans/prop_candidates.json
+OUTBOX/**/*.md
