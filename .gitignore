@@ -23,3 +23,7 @@ venv/
 OUTBOX/market_scans/live_candidates.json
 OUTBOX/market_scans/prop_candidates.json
 OUTBOX/**/*.md
+
+# --- Web desk runtime state ----------------------------------------------------
+data/web_desk.json
+data/.desk_run.lock

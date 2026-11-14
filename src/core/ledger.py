@@ -4,6 +4,9 @@ Position lifecycle (``status`` is the desk-facing view of the ``result`` column)
 
     PENDING    result UNSETTLED     open: stake committed (APPROVED) or reserved
                                      (PENDING_CAPTAIN_HZ)
+    (declined) hitl_status DECLINED Captain HZ passed: no stake, no exposure; the
+                                     settler may still shadow-grade it (net never
+                                     reaches the bankroll)
     WON        result WIN           net = stake * (dec - 1),  payout = stake * dec
     LOST       result LOSS          net = -stake,             payout = 0
     PUSH       result PUSH          net = 0,                  payout = stake
@@ -43,6 +46,7 @@ from src.core import database as db
 from src.core.config import bankroll_units
 from src.core.engine import (
     HITL_APPROVED,
+    HITL_DECLINED,
     HITL_PENDING,
     HITL_REJECTED,
     MIN_AMERICAN_ODDS,
@@ -269,7 +273,7 @@ class Ledger:
         cap, real = self.capital(), self.realized_pnl()
         exp, res = self.open_exposure(), self.open_exposure(HITL_PENDING)
         n_open = int(self._sum("SELECT COUNT(*) FROM ledger_picks WHERE origin = ? AND "
-                               "result = 'UNSETTLED' AND hitl_status != 'REJECTED'"))
+                               "result = 'UNSETTLED' AND hitl_status NOT IN ('REJECTED', 'DECLINED')"))
         n_set = int(self._sum("SELECT COUNT(*) FROM ledger_picks WHERE origin = ? AND "
                               "result IN ('WIN','LOSS','PUSH','CANCELLED')"))
         cash = cap + real - exp
@@ -387,6 +391,31 @@ class Ledger:
             fields["hitl_reason"] = note
         db.update_pick(self.conn, pick_id, **fields)
         self._journal(pick_id, "STAKE_COMMITTED", -float(p["kelly_units"]))
+        return db.get_pick(self.conn, pick_id)  # type: ignore[return-value]
+
+    def decline_position(self, pick_id: str, note: str | None = None) -> dict[str, Any]:
+        """Captain HZ passes on an open, unsigned pick: hitl_status -> DECLINED.
+
+        A declined pick holds no stake, so it drops out of open exposure, the
+        event caps and the bankroll; an auto-APPROVED stake is released back to
+        cash. Signed-off or dispatched picks cannot be declined.
+        """
+        p = self._open_pick(pick_id)
+        if p["result"] != "UNSETTLED":
+            raise ValueError(f"{pick_id} is already settled ({p['result']})")
+        if p["hitl_status"] == HITL_DECLINED:
+            return p
+        if p["hitl_status"] not in (HITL_APPROVED, HITL_PENDING):
+            raise ValueError(f"{pick_id} is {p['hitl_status']}; cannot decline")
+        if p["signoff_at"] or p["dispatched_at"]:
+            raise ValueError(f"{pick_id} is already signed off; it can no longer be declined")
+        fields: dict[str, Any] = {"hitl_status": HITL_DECLINED}
+        if note:
+            fields["hitl_reason"] = f"{p['hitl_reason'] or ''} | {note}".strip(" |")
+        was_committed = p["hitl_status"] == HITL_APPROVED
+        db.update_pick(self.conn, pick_id, **fields)
+        self._journal(pick_id, "STAKE_RELEASED" if was_committed else "RESERVATION_RELEASED",
+                      float(p["kelly_units"] or 0.0) if was_committed else 0.0)
         return db.get_pick(self.conn, pick_id)  # type: ignore[return-value]
 
     def resize_position(self, pick_id: str, units: float) -> dict[str, Any]:

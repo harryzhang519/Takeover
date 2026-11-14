@@ -31,6 +31,7 @@ _BISECT_ITERATIONS: int = 200
 HITL_APPROVED = "APPROVED"
 HITL_PENDING = "PENDING_CAPTAIN_HZ"
 HITL_REJECTED = "REJECTED"
+HITL_DECLINED = "DECLINED"          # Captain HZ passed on the pick (web desk / --decline)
 
 
 # --------------------------------------------------------------------------

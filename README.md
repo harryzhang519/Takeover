@@ -416,6 +416,7 @@ Every change to the app that lands on `main` is published as a GitHub release by
 - [Azure reference](docs/azure.md): picking a VM size, pausing, and everything `deploy/azure.sh` does
 - [How it works](docs/how-it-works.md): the architecture, and security notes
 - [Code layout](docs/code-layout.md): where the code lives, adding a feature or an agent provider, and the size guard
+- [Breeze Bets web desk](docs/web-desk.md): `python web_server.py` on localhost:8000, the 9:00 AM scan, Captain HZ approvals and the unit ROI tracker
 
 ## License
 

@@ -79,7 +79,7 @@ CREATE TABLE IF NOT EXISTS ledger_picks (
     closing_fair_prob  REAL,
     clv_percent        REAL,
     hitl_status        TEXT NOT NULL DEFAULT 'APPROVED'
-        CHECK (hitl_status IN ('APPROVED', 'PENDING_CAPTAIN_HZ', 'REJECTED')),
+        CHECK (hitl_status IN ('APPROVED', 'PENDING_CAPTAIN_HZ', 'REJECTED', 'DECLINED')),
     hitl_reason        TEXT,
     result             TEXT NOT NULL DEFAULT 'UNSETTLED'
         CHECK (result IN ('UNSETTLED', 'WIN', 'LOSS', 'PUSH', 'CANCELLED', 'RULE_VIOLATION')),
@@ -260,7 +260,8 @@ def _ledger_ddl() -> str:
 
 
 def _rebuild_ledger_if_stale(conn: sqlite3.Connection) -> bool:
-    """Rebuild ledger_picks when its CHECKs predate 'CANCELLED' or the player-prop markets.
+    """Rebuild ledger_picks when its CHECKs predate 'CANCELLED', the player-prop markets
+    or the 'DECLINED' HITL status.
 
     SQLite cannot alter a CHECK constraint, so this follows the documented
     create-copy-drop-rename procedure in one transaction (foreign keys off so
@@ -268,7 +269,8 @@ def _rebuild_ledger_if_stale(conn: sqlite3.Connection) -> bool:
     """
     row = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' "
                        "AND name = 'ledger_picks'").fetchone()
-    if row is None or ("'CANCELLED'" in row[0] and "'player_receptions'" in row[0]):
+    if row is None or all(tok in row[0] for tok in ("'CANCELLED'", "'player_receptions'",
+                                                     "'DECLINED'")):
         return False
     old_cols = [r["name"] for r in conn.execute("PRAGMA table_info(ledger_picks)")]
     ddl = _ledger_ddl().replace("CREATE TABLE IF NOT EXISTS ledger_picks",

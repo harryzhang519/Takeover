@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Breeze Bets Desk</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;600;700&display=swap">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="board" aria-label="Desk scoreboard">
+    <div class="board-top">
+      <div class="brand">
+        <span class="brand-name">Breeze Bets</span>
+        <span class="brand-sub">Captain HZ trading desk</span>
+      </div>
+      <div class="mode" role="group" aria-label="Data mode">
+        <button type="button" class="mode-btn" data-mode="live" aria-pressed="false">Live</button>
+        <button type="button" class="mode-btn" data-mode="mock" aria-pressed="false">Mock</button>
+      </div>
+    </div>
+
+    <dl class="kpis">
+      <div class="kpi kpi-lead"><dt>Net units</dt><dd id="k-net">--</dd></div>
+      <div class="kpi"><dt>ROI</dt><dd id="k-roi">--</dd></div>
+      <div class="kpi"><dt>Record W-L-V</dt><dd id="k-record">--</dd></div>
+      <div class="kpi"><dt>Win rate</dt><dd id="k-winrate">--</dd></div>
+      <div class="kpi"><dt>Open risk</dt><dd id="k-open">--</dd></div>
+      <div class="kpi kpi-clock"><dt>Next 9:00 AM scan</dt><dd id="k-next">--:--:--</dd></div>
+    </dl>
+
+    <div class="actions">
+      <button type="button" class="btn btn-go" id="act-scan">Run 9:00 scan now</button>
+      <button type="button" class="btn" id="act-settle">Settle final scores</button>
+      <button type="button" class="btn" id="act-approve-all">Approve all qualified</button>
+      <button type="button" class="btn" id="act-copy">Copy Discord drop</button>
+    </div>
+    <p class="ticker" id="ticker" role="status" aria-live="polite">Loading the desk.</p>
+  </header>
+
+  <main class="floor">
+    <section class="slate" aria-labelledby="slate-h">
+      <div class="col-head">
+        <h1 id="slate-h">9:00 AM Desk Slate</h1>
+        <p class="col-note" id="slate-note">Captain HZ sign-off queue</p>
+      </div>
+      <p class="keys">Keys: <kbd>J</kbd>/<kbd>K</kbd> move, <kbd>A</kbd> approve, <kbd>D</kbd> decline.</p>
+      <div id="stale" class="notice" hidden></div>
+      <div id="sports"></div>
+    </section>
+
+    <aside class="ledger" aria-labelledby="ledger-h">
+      <div class="col-head">
+        <h2 id="ledger-h">Verified Ledger</h2>
+        <p class="col-note">Units only, zero parlay tax</p>
+      </div>
+
+      <table class="split" aria-label="Performance by segment">
+        <thead><tr><th scope="col">Segment</th><th scope="col">W-L-V</th><th scope="col">Win %</th><th scope="col">Risked</th><th scope="col">Net</th><th scope="col">ROI</th></tr></thead>
+        <tbody id="split-body"></tbody>
+      </table>
+
+      <figure class="curve">
+        <figcaption>Cumulative units, signed-off picks</figcaption>
+        <div id="curve"></div>
+      </figure>
+
+      <h3 class="sub-h">Open official plays</h3>
+      <ol class="hist" id="open-list"></ol>
+
+      <h3 class="sub-h">Settled</h3>
+      <ol class="hist" id="settled-list"></ol>
+
+      <h3 class="sub-h">Discord drop</h3>
+      <p class="col-note" id="drop-path">Signed-off picks only.</p>
+      <pre class="drop" id="drop"></pre>
+    </aside>
+  </main>
+
+  <footer class="rules">
+    <p>Straight singles only. Game lines size at quarter-Kelly up to 2.00u; official player props are 1.00u flat. Per game: 2.0u game lines, 2.0u props, 4.0u combined. Pass if juice moves past -130.</p>
+  </footer>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
