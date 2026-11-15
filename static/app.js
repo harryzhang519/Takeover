@@ -3,7 +3,8 @@
 
 const $ = (id) => document.getElementById(id);
 const state = { status: null, slate: null, tracker: null, busy: false, focus: 0, polling: null,
-  lastAction: null };
+  lastAction: null, editing: null, draft: "" };
+const SOURCE_LABEL = { ollama: "Written by Ollama", template: "Desk template", edited: "Edited by you" };
 
 // ------------------------------------------------------------------ helpers
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => (
@@ -115,7 +116,8 @@ function ticket(v) {
     ? `<p class="t-why">${injury ? '<span class="flag">[Injury] </span>' : ""}${esc(v.hitl_reason)}</p>` : "";
   const act = v.signed
     ? `<div class="signed-row"><span class="stamp">Signed &middot; Captain HZ</span>
-         ${v.undoable ? '<button type="button" class="btn btn-undo" data-act="undo">Undo</button>' : ""}</div>`
+         ${v.undoable ? '<button type="button" class="btn btn-undo" data-act="undo">Undo</button>' : ""}</div>
+       ${v.post ? postBlock(v) : ""}`
     : `<div class="t-act">
          <button type="button" class="btn btn-approve" data-act="approve">Approve ${units(v.units)}</button>
          <button type="button" class="btn btn-decline" data-act="decline">Decline</button>
@@ -135,6 +137,64 @@ function ticket(v) {
       ${act}
     </div>
   </article>`;
+}
+
+function postBlock(v) {
+  const editing = state.editing === v.pick_id;
+  const header = v.post.split("\n\n")[0];
+  const body = editing
+    ? `<pre class="post-text">${esc(header)}</pre>
+       <label class="sr-only" for="edit-${esc(v.pick_id)}">Write-up for ${esc(v.label)}</label>
+       <textarea class="post-edit" id="edit-${esc(v.pick_id)}" rows="5" maxlength="2000">${esc(state.draft)}</textarea>`
+    : `<pre class="post-text">${esc(v.post)}</pre>`;
+  const buttons = editing
+    ? `<button type="button" class="btn btn-mini btn-save" data-post="save">Save</button>
+       <button type="button" class="btn btn-mini" data-post="cancel">Cancel</button>`
+    : `<button type="button" class="btn btn-mini" data-post="edit">Edit</button>
+       <button type="button" class="btn btn-mini" data-post="regen">Regenerate</button>
+       <button type="button" class="btn btn-mini btn-copy" data-post="copy">Copy post</button>`;
+  return `<div class="post">
+    <div class="post-head"><span>Discord post</span><span class="post-src">${SOURCE_LABEL[v.writeup_source] || ""}</span></div>
+    ${body}
+    <div class="post-act">${buttons}</div>
+  </div>`;
+}
+
+function findPick(id) {
+  for (const sp of state.slate?.sports || []) {
+    const hit = [...sp.games, ...sp.props].find((v) => v.pick_id === id);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+async function postAction(pickId, what, btn) {
+  const v = findPick(pickId);
+  if (!v) return;
+  if (what === "copy") {
+    const ok = await copyText(v.post);
+    toast(ok ? `Copied the ${v.label} post.` : "Copy blocked by the browser. Select the post text instead.", !ok);
+    return;
+  }
+  if (what === "edit") {
+    state.editing = pickId; state.draft = v.writeup || "";
+    renderSlate();
+    document.getElementById(`edit-${pickId}`)?.focus();
+    return;
+  }
+  if (what === "cancel") { state.editing = null; renderSlate(); return; }
+  const body = what === "regen" ? { regenerate: true } : { text: state.draft };
+  btn.disabled = true;
+  if (what === "regen") btn.textContent = "Writing...";
+  try {
+    await api(`/api/picks/${encodeURIComponent(pickId)}/writeup`, { method: "POST", body });
+    if (what === "save") state.editing = null;
+    toast(what === "save" ? `Saved your write-up for ${v.label}.` : `New write-up for ${v.label}.`);
+    await refreshAll();
+  } catch (e) {
+    toast(`Write-up not ${what === "save" ? "saved" : "regenerated"}: ${e.message}`, true);
+    btn.disabled = false;
+  }
 }
 
 function pillar(title, picks, solo) {
@@ -338,11 +398,25 @@ async function copyText(text) {
 
 function wire() {
   $("sports").addEventListener("click", (e) => {
+    const pb = e.target.closest("button[data-post]");
+    if (pb) { postAction(pb.closest(".ticket").dataset.id, pb.dataset.post, pb); return; }
     const btn = e.target.closest("button[data-act]");
     if (!btn) return;
     const card = btn.closest(".ticket");
     state.focus = tickets().indexOf(card);
     act(card.dataset.id, btn.dataset.act);
+  });
+  $("sports").addEventListener("input", (e) => {
+    if (e.target.classList.contains("post-edit")) state.draft = e.target.value;
+  });
+  $("sports").addEventListener("keydown", (e) => {
+    if (!e.target.classList.contains("post-edit")) return;
+    const card = e.target.closest(".ticket");
+    if (e.key === "Escape") { e.preventDefault(); postAction(card.dataset.id, "cancel"); }
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      postAction(card.dataset.id, "save", card.querySelector("[data-post=save]"));
+    }
   });
   $("sports").addEventListener("focusin", (e) => {
     const card = e.target.closest(".ticket");

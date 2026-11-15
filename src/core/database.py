@@ -238,6 +238,7 @@ PICK_COLUMNS: tuple[str, ...] = (
     "closing_fair_prob", "clv_percent", "hitl_status", "hitl_reason", "result",
     "net_units", "origin", "settled_at", "model_prob", "analysis",
     "payout_units", "signoff_by", "signoff_at", "signoff_hash", "dispatched_at", "dispatch_ref",
+    "discord_writeup", "writeup_source",
 )
 
 # Columns added after the first release: (table, column, DDL type). Applied by connect().
@@ -250,6 +251,8 @@ MIGRATIONS: tuple[tuple[str, str, str], ...] = (
     ("ledger_picks", "signoff_hash", "TEXT"),          # binds sign-off to the exact terms
     ("ledger_picks", "dispatched_at", "TIMESTAMP"),
     ("ledger_picks", "dispatch_ref", "TEXT"),
+    ("ledger_picks", "discord_writeup", "TEXT"),      # capper write-up, APPROVED picks only
+    ("ledger_picks", "writeup_source", "TEXT"),       # ollama | template | edited
 )
 
 

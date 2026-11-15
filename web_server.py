@@ -13,6 +13,7 @@ API (JSON):
     POST /api/picks/{id}/approve      Captain HZ sign-off (run_pipeline.py --approve)
     POST /api/picks/{id}/decline      -> DECLINED (run_pipeline.py --decline)
     POST /api/picks/{id}/undo         APPROVED / DECLINED -> PENDING (run_pipeline.py --undo)
+    POST /api/picks/{id}/writeup      {"text": "..."} saves an edit, {"regenerate": true} redoes it
     POST /api/picks/approve-all       sign off every qualified unsigned pick on today's slate
     POST /api/scan                    background: --update-stats --scan (or --mock)
     POST /api/settle                  background: --settle (grades WIN / LOSS / PUSH / VOID)
@@ -43,6 +44,7 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
 from src.core import database as db  # noqa: E402
+from src.core.config import load_env  # noqa: E402
 from src.web import desk  # noqa: E402
 from src.web.jobs import DailyScheduler, Job, JobBusy, JobRunner, next_run_at  # noqa: E402
 
@@ -54,7 +56,7 @@ CSRF_HEADER = "X-Breeze-Desk"
 LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "[::1]"})
 MAX_BODY = 16 * 1024
 SCHEDULE_HOUR, SCHEDULE_MINUTE = 9, 0
-PICK_ACTION = re.compile(r"^/api/picks/(PK-[0-9a-f]{6,40})/(approve|decline|undo)$")
+PICK_ACTION = re.compile(r"^/api/picks/(PK-[0-9a-f]{6,40})/(approve|decline|undo|writeup)$")
 
 
 # ==========================================================================
@@ -169,8 +171,12 @@ class DeskApp:
             pick_id, action = m.groups()
             conn = self.connect()
             try:
-                act = {"approve": desk.approve, "decline": desk.decline, "undo": desk.undo}[action]
-                view = act(conn, pick_id)
+                if action == "writeup":
+                    view = self._writeup(conn, pick_id, body)
+                else:
+                    act = {"approve": desk.approve, "decline": desk.decline,
+                           "undo": desk.undo}[action]
+                    view = act(conn, pick_id)
             finally:
                 conn.close()
             drop = self.refresh_drop(view["origin"])
@@ -203,6 +209,15 @@ class DeskApp:
                                                    "mode": mode})
             return 200, self.status()
         raise HttpError(404, f"no route POST {path}")
+
+    @staticmethod
+    def _writeup(conn: sqlite3.Connection, pick_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        if body.get("regenerate"):
+            return desk.regenerate_writeup(conn, pick_id)
+        text = body.get("text")
+        if not isinstance(text, str):
+            raise HttpError(400, 'send {"text": "..."} or {"regenerate": true}')
+        return desk.save_writeup(conn, pick_id, text)
 
     def static_file(self, path: str) -> tuple[bytes, str] | None:
         rel = "index.html" if path in ("", "/") else path.lstrip("/")
@@ -316,6 +331,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--live", action="store_true", help="with --daily-run: force live mode")
     ap.add_argument("--verbose", action="store_true", help="log every request")
     args = ap.parse_args(argv)
+    load_env()                       # .env settings (Ollama write-ups, API keys) like the CLI
     app = DeskApp(db_path=args.db)
 
     if args.daily_run:

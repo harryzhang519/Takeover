@@ -39,10 +39,32 @@ The desk binds to `127.0.0.1` and has no login. It answers only requests address
    - **Bankroll effect:** undoing an approval releases the committed stake back to cash. The pick goes back to holding a pending reservation, the same as before you approved it. The journal is append-only, so the reversal is a new `STAKE_UNCOMMITTED` row that cancels the `STAKE_COMMITTED` row, and approving again leaves one net commitment.
    - **Keyboard:** `J`/`K` move between picks, `A` approves, `D` declines and `Z` undoes the last approve or decline.
 4. **Discord drop:**
-   - **When it updates:** every approve, decline and pipeline job rewrites `OUTBOX/discord_briefs/<date>_approved_drop.md`, which holds signed-off open picks only.
+   - **When it updates:** every approve, decline, undo, write-up edit and pipeline job rewrites `OUTBOX/discord_briefs/<date>_approved_drop.md`, which holds signed-off open picks only.
+   - **Format:** each pick is a ready-to-paste Discord post, in start-time order:
+     ```text
+     8:15 PM ET
+     🏈 **Jaguars -9.5** (1.50u)
+     BetMGM: -108 / 1.93
+
+     <2-5 sentence write-up> @everyone
+     ```
    - **Mock mode:** a mock desk writes `<date>_approved_drop_mock.md`, so it never overwrites the live card.
-   - **Copying:** **Copy Discord drop** puts the card on the clipboard.
-5. **Verified Ledger:**
+   - **Copying:** **Copy Discord drop** puts the whole card on the clipboard. Each approved pick also has **Copy post**.
+5. **Write-ups:** a pick gets its write-up when you approve it, through Approve, Approve all qualified or `run_pipeline.py --approve`. Pending and declined picks never get one, and Undo clears it.
+   - **Where the facts come from:**
+     - **The pick itself:** its ledger row and analysis, plus `live_candidates.json` / `prop_candidates.json`.
+     - **Schedule spots:** back-to-backs, NFL short weeks, hangover, letdown, bounce-back, lookahead and sandwich spots.
+     - **Injuries:** key players Out or Doubtful, with QBs first in the NFL.
+     - **Matchup and pace:** net rating / SRS ranks, pace ranks, and the opponent's defensive allowance ranks for props.
+     - **Player form:** recent games against the line.
+     - **Market:** the game total and its juice, the sharp vs retail price, and sharp line movement.
+     - **Only facts that support your side are used.** A sport or team with no data just gets fewer facts.
+   - **Who writes it:**
+     - **Ollama first:** a local Ollama (`BREEZE_OLLAMA_URL`, default `http://localhost:11434`; `BREEZE_OLLAMA_MODEL`, default `qwen2.5-coder:7b`; 4-second timeout) gets those facts plus the three voice examples.
+     - **Checks on its answer:** it is rejected if it uses a number that isn't in the facts, talks about the math (models, Kelly, probabilities, percentages) or isn't 2 to 5 sentences. Em dashes become commas, and every post ends with `@everyone`.
+     - **Fallback:** when Ollama is off, slow or rejected, a deterministic template writes the post in the same voice from the strongest three facts. After one failed call Ollama is skipped for 60 seconds, so a batch approve never stalls. `BREEZE_WRITEUP_LLM=off` turns Ollama off.
+   - **Editing:** each approved pick shows its post with **Edit** (`Ctrl+Enter` saves, `Esc` cancels), **Regenerate** and **Copy post**. A tag shows whether the text came from Ollama, the desk template or your edit.
+6. **Verified Ledger:**
    - **What counts:** only picks that are APPROVED and signed off by Captain HZ. A scanner auto-approval is not a sign-off.
    - **Units risked:** stakes on wins and losses. A push or a void (game cancelled, player DNP or 0 snaps) hands the stake back.
    - **ROI:** net units ÷ units risked.
@@ -73,9 +95,10 @@ The task runs `web_server.py --daily-run`. If the PC is asleep at 9:00, it runs 
 | POST | `/api/picks/{id}/approve` | Captain HZ sign-off |
 | POST | `/api/picks/{id}/decline` | Mark DECLINED |
 | POST | `/api/picks/{id}/undo` | APPROVED or DECLINED back to PENDING_CAPTAIN_HZ (open picks only) |
+| POST | `/api/picks/{id}/writeup` | `{"text": "..."}` saves your edit, `{"regenerate": true}` writes a fresh one (approved picks only) |
 | POST | `/api/picks/approve-all` | Sign off every qualified unsigned pick |
 | POST | `/api/scan` | Background stats + scan (`{"mode": "mock"}` optional) |
 | POST | `/api/settle` | Background settlement |
 | POST | `/api/settings` | `{"mode": "live" \| "mock"}` |
 
-The code lives in `web_server.py` (HTTP and routes), `src/web/desk.py` (slate, tracker and actions), `src/web/jobs.py` (pipeline jobs, the lock and the scheduler) and `static/` (the page). The tests are in `tests/test_web_desk.py`.
+The code lives in `web_server.py` (HTTP and routes), `src/web/desk.py` (slate, tracker and actions), `src/web/jobs.py` (pipeline jobs, the lock and the scheduler), `templates/writeup_generator.py` (facts, Ollama and the template voice), `templates/discord_templates.py` (the post format) and `static/` (the page). The tests are in `tests/test_web_desk.py` and `tests/test_writeups.py`.

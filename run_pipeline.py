@@ -51,6 +51,7 @@ from src.data.teams import SPORT_TO_LEAGUE  # noqa: E402
 from templates.analysis_cards import render_analysis_card  # noqa: E402
 from templates.discord_templates import select_free_pick, write_discord_briefs  # noqa: E402
 from templates.social_templates import write_social_content  # noqa: E402
+from templates.writeup_generator import attach_writeup  # noqa: E402
 
 SCHEMA_PATH = ROOT / "schemas" / "market_scan_schema.json"
 PROP_SCHEMA_PATH = ROOT / "schemas" / "prop_scan_schema.json"
@@ -252,6 +253,11 @@ def do_approve(conn, pick_id: str) -> int:
         return 1
     print(f"[approve] {pick_id} {p['selection']} -> APPROVED + signed off by "
           f"{p['signoff_by']} ({p['kelly_units']:.2f}u)")
+    try:
+        p = attach_writeup(conn, pick_id)
+        print(f"[writeup] ({p['writeup_source']}) {p['discord_writeup']}")
+    except Exception as exc:                                   # noqa: BLE001 - never block
+        print(f"[writeup] skipped: {exc}", file=sys.stderr)
     return 0
 
 

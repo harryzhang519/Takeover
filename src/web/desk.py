@@ -7,6 +7,7 @@ refuse:
     approve      orchestrator.sign_off      pending -> APPROVED + Captain HZ sign-off
     decline      Ledger.decline_position    -> DECLINED (no stake, no exposure)
     undo         Ledger.undo_decision       APPROVED / DECLINED -> PENDING_CAPTAIN_HZ
+    write-ups    writeup_generator          capper blurb, generated on approval only
     slate        open picks for today, grouped NBA / NFL (empty sports omitted)
     tracker      official picks only: APPROVED *and* signed off by Captain HZ
     discord      markdown for the signed-off open card, written to OUTBOX
@@ -22,6 +23,7 @@ Tracker math (all in units):
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -33,6 +35,10 @@ from src.core.ledger import Ledger, undo_pick_decision
 from src.core.orchestrator import OPERATOR, quantitative_filter_reasons, sign_off
 from src.core.prop_model import PROP_MARKETS, is_prop_market
 from src.data.teams import SPORT_TO_LEAGUE
+from templates import writeup_generator as wg
+from templates.discord_templates import discord_post, render_approved_drop
+
+log = logging.getLogger("breeze.desk")
 
 SPORT_ORDER: tuple[str, ...] = ("NBA", "NFL")
 GAME_MARKET_LABELS = {"h2h": "Moneyline", "spreads": "Spread", "totals": "Total",
@@ -42,7 +48,6 @@ VOID_RESULTS = ("PUSH", "CANCELLED")
 OFFICIAL_SQL = "hitl_status = 'APPROVED' AND signoff_at IS NOT NULL"
 OPEN_SQL = "result = 'UNSETTLED' AND hitl_status IN ('APPROVED', 'PENDING_CAPTAIN_HZ')"
 ORIGINS = (db.ORIGIN_LIVE, db.ORIGIN_MOCK)
-ODDS_FLOOR_NOTE = "Pass if juice moves past -130"
 
 
 class DeskError(ValueError):
@@ -124,6 +129,7 @@ def pick_view(p: dict[str, Any], now: datetime | None = None) -> dict[str, Any]:
                      and (p.get("hitl_status") == HITL_DECLINED
                           or (p.get("hitl_status") == HITL_APPROVED
                               and bool(p.get("signoff_at"))))),
+        "writeup": p.get("discord_writeup"), "writeup_source": p.get("writeup_source"),
     }
 
 
@@ -147,7 +153,7 @@ def slate(conn: sqlite3.Connection, origin: str, now: datetime | None = None) ->
     since = db.iso(local_day_start(now))
     rows = db.fetch_picks(conn, f"origin = ? AND {OPEN_SQL} AND commence_time >= ?",
                           (origin, since))
-    views = [pick_view(r, now) for r in rows]
+    views = [with_post(pick_view(r, now)) for r in rows]
     sports = []
     for lg in SPORT_ORDER:
         mine = sorted((v for v in views if v["league"] == lg), key=_sort_key)
@@ -189,14 +195,57 @@ def approve(conn: sqlite3.Connection, pick_id: str, now: datetime | None = None
     """Captain HZ sign-off (same path as ``run_pipeline.py --approve``)."""
     p = _require(conn, pick_id)
     if p["signoff_at"] and p["hitl_status"] == HITL_APPROVED:
-        return pick_view(p, now)
+        if not p["discord_writeup"]:
+            p = _ensure_writeup(conn, pick_id) or p
+        return with_post(pick_view(p, now))
     if p["hitl_status"] not in (HITL_PENDING, HITL_APPROVED):
         raise DeskError(f"{pick_id} is {p['hitl_status']}; cannot sign off")
     try:
         p = sign_off(conn, pick_id, now=now)
     except (KeyError, ValueError, PermissionError) as exc:
         raise DeskError(str(exc).strip("'\"")) from exc
-    return pick_view(p, now)
+    p = _ensure_writeup(conn, pick_id) or p
+    return with_post(pick_view(p, now))
+
+
+def _ensure_writeup(conn: sqlite3.Connection, pick_id: str,
+                    llm: wg.Llm | None = None) -> dict[str, Any] | None:
+    """Write-up for a freshly approved pick. Never blocks or fails the approval itself."""
+    try:
+        return wg.attach_writeup(conn, pick_id, llm)
+    except Exception as exc:                                  # noqa: BLE001
+        log.warning("write-up for %s failed: %s", pick_id, exc)
+        return None
+
+
+def with_post(v: dict[str, Any]) -> dict[str, Any]:
+    """Add the Discord post (header + write-up) to an approved, signed-off pick view."""
+    if v["hitl_status"] == HITL_APPROVED and v["signed"]:
+        v["post"] = discord_post(v, v.get("writeup"))
+    return v
+
+
+def regenerate_writeup(conn: sqlite3.Connection, pick_id: str, now: datetime | None = None,
+                       llm: wg.Llm | None = None) -> dict[str, Any]:
+    """Throw away the current write-up and generate a fresh one (Ollama, else template)."""
+    _require(conn, pick_id)
+    try:
+        p = wg.attach_writeup(conn, pick_id, llm)
+    except ValueError as exc:
+        raise DeskError(str(exc)) from exc
+    return with_post(pick_view(p, now))
+
+
+def save_writeup(conn: sqlite3.Connection, pick_id: str, text: str,
+                 now: datetime | None = None) -> dict[str, Any]:
+    """Store Captain HZ's own edit of an approved pick's write-up."""
+    _require(conn, pick_id)
+    try:
+        p = wg.save_custom_writeup(conn, pick_id, text)
+    except ValueError as exc:
+        bad_input = "empty" in str(exc) or "longer" in str(exc)
+        raise DeskError(str(exc), 400 if bad_input else 409) from exc
+    return with_post(pick_view(p, now))
 
 
 def decline(conn: sqlite3.Connection, pick_id: str, now: datetime | None = None
@@ -282,7 +331,7 @@ def tracker(conn: sqlite3.Connection, origin: str, now: datetime | None = None,
         "by_kind": {"game": _agg([r for r in settled if not is_prop_market(r["market_type"])]),
                     "prop": _agg([r for r in settled if is_prop_market(r["market_type"])])},
         "curve": curve,
-        "open": [pick_view(r, now) for r in open_rows],
+        "open": [with_post(pick_view(r, now)) for r in open_rows],
         "settled": [pick_view(r, now) for r in reversed(settled[-history_limit:])],
     }
 
@@ -290,54 +339,26 @@ def tracker(conn: sqlite3.Connection, origin: str, now: datetime | None = None,
 # ==========================================================================
 # Discord drop (signed-off picks only)
 # ==========================================================================
-def _odds(v: Any) -> str:
-    return "n/a" if v is None else f"{int(v):+d}"
-
-
-def _tip(commence: str | None) -> str:
-    if not commence:
-        return "TBD"
-    return db.parse_ts(commence).astimezone().strftime("%a %I:%M %p").replace(" 0", " ")
-
-
 def discord_drop(conn: sqlite3.Connection, origin: str, now: datetime | None = None) -> str:
-    """Postable markdown for today's signed-off, still-open card. Nothing else gets in."""
+    """Postable markdown for today's signed-off, still-open card. Nothing else gets in.
+
+    Each pick is a Discord post: ET start, emoji + bold selection + units,
+    'Book: American / Decimal', then its write-up. A pick approved before
+    write-ups existed gets a template blurb on the fly.
+    """
     now = now or db.utcnow()
     _check_origin(origin)
     since = db.iso(local_day_start(now))
     rows = db.fetch_picks(conn, f"origin = ? AND {OFFICIAL_SQL} AND result = 'UNSETTLED' "
                                 f"AND commence_time >= ?", (origin, since))
-    views = sorted((pick_view(r, now) for r in rows),
-                   key=lambda v: (v["commence_time"] or "", v["pick_id"]))
+    views = []
+    for r in rows:
+        v = pick_view(r, now)
+        if not v["writeup"]:
+            v["writeup"] = wg.generate_writeup(conn, r, llm=lambda _prompt: None)[0]
+        views.append(v)
     day = local_day_start(now).strftime("%A, %B %d").replace(" 0", " ")
-    out = [f"# Breeze Bets - Official Card - {day}"]
-    if origin == db.ORIGIN_MOCK:
-        out += ["", "> **MOCK DESK - SYNTHETIC DATA. Do not post or bet.**"]
-    if not views:
-        out += ["", "No official plays signed off yet. No edge, no play."]
-        return "\n".join(out) + "\n"
-    for lg in SPORT_ORDER:
-        mine = [v for v in views if v["league"] == lg]
-        if not mine:
-            continue
-        out += ["", f"## {lg}"]
-        for kind, title in (("game", "Game Lines"), ("prop", "Player Props")):
-            group = [v for v in mine if v["kind"] == kind]
-            if not group:
-                continue
-            out += ["", f"**{title}**"]
-            for v in group:
-                proj = (f" | proj {v['projection']:.1f} ({v['delta']:+.1f})"
-                        if v["kind"] == "prop" and v["projection"] is not None
-                        and v["delta"] is not None else "")
-                out.append(f"- **{v['label']}** {_odds(v['offered_american'])} "
-                           f"({v['bookmaker'] or 'book'}) | **{v['units']:.2f}u** | edge "
-                           f"+{(v['ev_percent'] or 0.0):.1f}% EV{proj}")
-                out.append(f"  {v['event']} - {_tip(v['commence_time'])}")
-    units = sum(v["units"] for v in views)
-    out += ["", f"**Card: {len(views)} plays, {units:.2f}u total.** Straight singles only. "
-                f"{ODDS_FLOOR_NOTE}. Units, not dollars."]
-    return "\n".join(out) + "\n"
+    return render_approved_drop(views, day, mock=origin == db.ORIGIN_MOCK)
 
 
 def drop_path(out_dir: Path, origin: str, now: datetime | None = None) -> Path:

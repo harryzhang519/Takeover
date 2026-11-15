@@ -6,6 +6,8 @@ Turns schema-validated game opportunities and player props into markdown:
     * ``generate_vip_syndicate_card`` -> the full institutional game-line card
     * ``generate_prop_card``          -> official 1.00u player props
     * ``write_discord_briefs``        -> writes the unified drop to the Discord OUTBOX
+    * ``discord_post``                -> one APPROVED pick as a Discord post (header + write-up)
+    * ``render_approved_drop``        -> the approved-only card (<date>_approved_drop.md)
 
 All copy is driven by the numbers in each opportunity dict, so the text
 cannot drift from the math.
@@ -262,3 +264,94 @@ def write_discord_briefs(opps: list[dict], slate_date: str, out_dir: str | Path,
     path = Path(out_dir) / f"{slate_date}_drop.md"
     path.write_text(body + "\n", encoding="utf-8")
     return path
+
+
+# ==========================================================================
+# Approved-pick Discord posts (<date>_approved_drop.md and the web desk preview)
+# ==========================================================================
+#
+#   8:15 PM ET
+#   🏀 **Suns -6.5** (1.57u)
+#   FanDuel: +105 / 2.05
+#
+#   <2-5 sentence capper write-up> @everyone
+SPORT_EMOJI = {"NBA": "🏀", "NFL": "🏈"}       # basketball, american football
+PROP_POST_LABELS = {"PTS": "Pts", "REB": "Reb", "AST": "Ast", "3PM": "Threes",
+                    "Pass Yds": "Pass Yds", "Rush Yds": "Rush Yds", "Rec Yds": "Rec Yds",
+                    "Rec": "Receptions"}
+EASTERN = "America/New_York"
+
+
+def decimal_odds_str(american: int | float) -> str:
+    """American -> decimal odds, two places: -108 -> '1.93', +105 -> '2.05'."""
+    return f"{american_to_decimal(int(american)):.2f}"
+
+
+def eastern_start(commence_iso: str | None) -> str:
+    """'2026-11-16T01:15:00Z' -> '8:15 PM ET' (EST or EDT as the date requires)."""
+    if not commence_iso:
+        return "Time TBD"
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    t = datetime.fromisoformat(commence_iso.replace("Z", "+00:00")).astimezone(ZoneInfo(EASTERN))
+    return f"{t.strftime('%I:%M %p').lstrip('0')} ET"
+
+
+def team_nickname(full_name: str, league: str) -> str:
+    """'Jacksonville Jaguars' -> 'Jaguars', 'Portland Trail Blazers' -> 'Trail Blazers'."""
+    from src.data.team_registry import REGISTRY, try_resolve_team
+    cid = try_resolve_team(full_name, league) if league in ("NBA", "NFL") else None
+    name = REGISTRY[cid].full_name if cid else full_name
+    for two_word in ("Trail Blazers",):
+        if name.endswith(two_word):
+            return two_word
+    return name.rsplit(" ", 1)[-1] if " " in name else name
+
+
+def post_selection(pick: dict) -> str:
+    """Bet-slip wording for the post header: 'Suns -6.5', 'Jayson Tatum Over 27.5 Pts'."""
+    from src.core.prop_model import PROP_MARKETS
+    mt, sel, pt = pick.get("market_type"), pick.get("selection") or "", pick.get("line_point")
+    league = pick.get("league") or ""
+    if mt in PROP_MARKETS:
+        label = PROP_POST_LABELS.get(PROP_MARKETS[mt].label, PROP_MARKETS[mt].label)
+        return f"{sel}{'' if pt is None else f' {pt:g}'} {label}"
+    if mt == "totals":
+        away, _, home = (pick.get("event") or pick.get("event_name") or "").partition(" @ ")
+        teams = f"{team_nickname(away, league)}/{team_nickname(home, league)} " if home else ""
+        return f"{teams}{sel}{'' if pt is None else f' {pt:g}'}"
+    nick = team_nickname(sel, league)
+    if mt == "spreads" and pt is not None:
+        return f"{nick} {pt:+g}"
+    return f"{nick} ML"
+
+
+def discord_post_header(pick: dict) -> str:
+    """Time, emoji + bold selection + units, and 'Book: American / Decimal'."""
+    emoji = SPORT_EMOJI.get(pick.get("league") or "", "")
+    units = float(pick.get("units", pick.get("kelly_units")) or 0.0)
+    odds = int(pick["offered_american"])
+    return "\n".join([
+        eastern_start(pick.get("commence_time")),
+        f"{emoji} **{post_selection(pick)}** ({units:.2f}u)".strip(),
+        f"{pick.get('bookmaker') or 'Book'}: {odds:+d} / {decimal_odds_str(odds)}",
+    ])
+
+
+def discord_post(pick: dict, writeup: str | None = None) -> str:
+    """Full Discord post for one APPROVED pick: header, blank line, write-up."""
+    body = (writeup if writeup is not None else pick.get("writeup")) or ""
+    return discord_post_header(pick) + ("\n\n" + body.strip() if body.strip() else "")
+
+
+def render_approved_drop(picks: list[dict], day_label: str, mock: bool = False) -> str:
+    """The approved-only card: every signed-off pick as a Discord post, in start-time order."""
+    out = [f"# Breeze Bets - Official Card - {day_label}"]
+    if mock:
+        out += ["", "> **MOCK DESK - SYNTHETIC DATA. Do not post or bet.**"]
+    if not picks:
+        out += ["", "No official plays signed off yet. No edge, no play."]
+        return "\n".join(out) + "\n"
+    for p in sorted(picks, key=lambda x: (x.get("commence_time") or "", x.get("pick_id") or "")):
+        out += ["", discord_post(p)]
+    return "\n".join(out) + "\n"

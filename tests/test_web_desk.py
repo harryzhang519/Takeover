@@ -240,10 +240,9 @@ def test_discord_drop_lists_only_signed_off_open_picks(conn, tmp_path) -> None:
     desk.approve(conn, "PK-ffffff000002", now=NOW)
     desk.decline(conn, "PK-ffffff000003", now=NOW)
     md = desk.discord_drop(conn, MOCK, NOW)
-    assert "Boston Celtics -3.5" in md and "Jayson Tatum Over 27.5 PTS" in md
-    assert "Milwaukee Bucks" not in md.split("## NBA", 1)[1].replace(
-        "Boston Celtics @ Milwaukee Bucks", "")
-    assert "MOCK DESK" in md and "2 plays, 2.00u" in md and "-130" in md
+    assert "**Celtics -3.5** (1.00u)" in md and "**Jayson Tatum Over 27.5 Pts** (1.00u)" in md
+    assert "**Bucks" not in md                                         # declined: not posted
+    assert "MOCK DESK" in md and md.count("@everyone") == 2
     path = desk.write_discord_drop(conn, MOCK, tmp_path / "drops", NOW)
     assert path.name.endswith("_approved_drop_mock.md")
     assert path.read_text(encoding="utf-8") == md
@@ -404,7 +403,7 @@ def test_http_approve_decline_slate_tracker_and_drop(server) -> None:
 
     status, out = _call(base + "/api/picks/PK-222222000001/approve", "POST")
     assert status == 200 and out["pick"]["signed"]
-    assert Path(out["drop_path"]).read_text(encoding="utf-8").count("Boston Celtics -3.5") == 1
+    assert Path(out["drop_path"]).read_text(encoding="utf-8").count("**Celtics -3.5**") == 1
     status, out = _call(base + "/api/picks/PK-222222000003/decline", "POST")
     assert status == 200 and out["pick"]["hitl_status"] == HITL_DECLINED
     assert _call(base + "/api/picks/PK-222222000003/approve", "POST")[0] == 409
@@ -415,7 +414,7 @@ def test_http_approve_decline_slate_tracker_and_drop(server) -> None:
     _, tr = _call(base + "/api/tracker")
     assert tr["summary"]["open_count"] == 1
     _, drop = _call(base + "/api/discord-drop")
-    assert "Boston Celtics -3.5" in drop["markdown"] and "PTS" not in drop["markdown"]
+    assert "**Celtics -3.5**" in drop["markdown"] and "Jayson Tatum" not in drop["markdown"]
 
     status, out = _call(base + "/api/picks/approve-all", "POST")
     assert status == 200 and [v["pick_id"] for v in out["approved"]] == ["PK-222222000002"]
@@ -457,7 +456,7 @@ def test_undo_approved_restores_pending_frees_stake_and_leaves_drop(conn) -> Non
     cash0, event0 = led.cash(), db.open_event_exposure(conn, "ev-nba-1")
     desk.approve(conn, "PK-777777000001", now=NOW)
     assert led.open_exposure() == 1.5 and led.cash() == pytest.approx(cash0 - 1.5)
-    assert "Boston Celtics -3.5" in desk.discord_drop(conn, MOCK, NOW)
+    assert "**Celtics -3.5**" in desk.discord_drop(conn, MOCK, NOW)
 
     v = desk.undo(conn, "PK-777777000001", now=NOW)
     p = db.get_pick(conn, "PK-777777000001")
@@ -562,11 +561,11 @@ def test_http_undo_route_guarded_and_refreshes_drop(server) -> None:
     conn.close()
     _, out = _call(base + "/api/picks/PK-888888000001/approve", "POST")
     drop = Path(out["drop_path"])
-    assert "Boston Celtics -3.5" in drop.read_text(encoding="utf-8")
+    assert "**Celtics -3.5**" in drop.read_text(encoding="utf-8")
     url = base + "/api/picks/PK-888888000001/undo"
     assert _call(url, "POST", headers={"X-Breeze-Desk": ""})[0] == 403
     assert _call(url, "POST", headers={"Host": "evil.example"})[0] == 403
     status, out = _call(url, "POST")
     assert status == 200 and out["pick"]["hitl_status"] == HITL_PENDING
-    assert "Boston Celtics -3.5" not in drop.read_text(encoding="utf-8")
+    assert "**Celtics -3.5**" not in drop.read_text(encoding="utf-8")
     assert _call(url, "POST")[0] == 409                                # nothing left to undo
