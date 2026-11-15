@@ -34,7 +34,10 @@ The desk binds to `127.0.0.1` and has no login. It answers only requests address
    - **Approve** runs the same sign-off as `run_pipeline.py --approve`, with the same quantitative filters, event caps and bankroll check.
    - **Decline** sets `hitl_status` to `DECLINED` (also available as `run_pipeline.py --decline PICK_ID`). The pick drops out of the queue, the exposure caps, the tracker and the Discord drop.
    - **Approve all qualified** signs off only picks that pass every filter, and reports the rest.
-   - **Keyboard:** `J`/`K` move between picks, `A` approves and `D` declines.
+   - **Undo:** every approve or decline shows an 8-second toast with an **Undo** button, and `Z` undoes your most recent one. Signed picks on the slate and in **Open official plays** keep an **Undo** button until they're settled, and **Declined today** at the bottom of the slate lists the day's passes with **Undo** on each. Undo sends the pick back to `PENDING_CAPTAIN_HZ`; it's also `run_pipeline.py --undo PICK_ID`.
+   - **What undo won't do:** it refuses a pick that's already graded (WIN, LOSS, PUSH or VOID) or was dispatched to a book. A declined pick returns only if it still fits the event caps and available cash.
+   - **Bankroll effect:** undoing an approval releases the committed stake back to cash. The pick goes back to holding a pending reservation, the same as before you approved it. The journal is append-only, so the reversal is a new `STAKE_UNCOMMITTED` row that cancels the `STAKE_COMMITTED` row, and approving again leaves one net commitment.
+   - **Keyboard:** `J`/`K` move between picks, `A` approves, `D` declines and `Z` undoes the last approve or decline.
 4. **Discord drop:**
    - **When it updates:** every approve, decline and pipeline job rewrites `OUTBOX/discord_briefs/<date>_approved_drop.md`, which holds signed-off open picks only.
    - **Mock mode:** a mock desk writes `<date>_approved_drop_mock.md`, so it never overwrites the live card.
@@ -69,6 +72,7 @@ The task runs `web_server.py --daily-run`. If the PC is asleep at 9:00, it runs 
 | GET | `/api/discord-drop[?origin=]` | Markdown for today's signed-off card |
 | POST | `/api/picks/{id}/approve` | Captain HZ sign-off |
 | POST | `/api/picks/{id}/decline` | Mark DECLINED |
+| POST | `/api/picks/{id}/undo` | APPROVED or DECLINED back to PENDING_CAPTAIN_HZ (open picks only) |
 | POST | `/api/picks/approve-all` | Sign off every qualified unsigned pick |
 | POST | `/api/scan` | Background stats + scan (`{"mode": "mock"}` optional) |
 | POST | `/api/settle` | Background settlement |

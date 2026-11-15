@@ -12,6 +12,7 @@ API (JSON):
     GET  /api/discord-drop[?origin=]  markdown for today's signed-off card only
     POST /api/picks/{id}/approve      Captain HZ sign-off (run_pipeline.py --approve)
     POST /api/picks/{id}/decline      -> DECLINED (run_pipeline.py --decline)
+    POST /api/picks/{id}/undo         APPROVED / DECLINED -> PENDING (run_pipeline.py --undo)
     POST /api/picks/approve-all       sign off every qualified unsigned pick on today's slate
     POST /api/scan                    background: --update-stats --scan (or --mock)
     POST /api/settle                  background: --settle (grades WIN / LOSS / PUSH / VOID)
@@ -53,7 +54,7 @@ CSRF_HEADER = "X-Breeze-Desk"
 LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "[::1]"})
 MAX_BODY = 16 * 1024
 SCHEDULE_HOUR, SCHEDULE_MINUTE = 9, 0
-PICK_ACTION = re.compile(r"^/api/picks/(PK-[0-9a-f]{6,40})/(approve|decline)$")
+PICK_ACTION = re.compile(r"^/api/picks/(PK-[0-9a-f]{6,40})/(approve|decline|undo)$")
 
 
 # ==========================================================================
@@ -168,7 +169,8 @@ class DeskApp:
             pick_id, action = m.groups()
             conn = self.connect()
             try:
-                view = (desk.approve if action == "approve" else desk.decline)(conn, pick_id)
+                act = {"approve": desk.approve, "decline": desk.decline, "undo": desk.undo}[action]
+                view = act(conn, pick_id)
             finally:
                 conn.close()
             drop = self.refresh_drop(view["origin"])

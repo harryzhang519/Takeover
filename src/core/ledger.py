@@ -418,6 +418,46 @@ class Ledger:
                       float(p["kelly_units"] or 0.0) if was_committed else 0.0)
         return db.get_pick(self.conn, pick_id)  # type: ignore[return-value]
 
+    def undo_decision(self, pick_id: str, note: str | None = None) -> dict[str, Any]:
+        """Revert an APPROVED or DECLINED open pick to PENDING_CAPTAIN_HZ.
+
+        Only open picks (result UNSETTLED) that were never dispatched can be
+        undone. The journal is append-only, so the reversal is a new row rather
+        than a deleted one: an APPROVED stake gets ``STAKE_UNCOMMITTED`` (+stake),
+        which nets its ``STAKE_COMMITTED`` to zero, so approving again later
+        leaves exactly one net commitment. A DECLINED pick re-enters its event
+        exposure bucket as a reservation, so it must fit the event caps and
+        available cash again.
+        """
+        p = self._open_pick(pick_id)
+        if p["result"] != "UNSETTLED":
+            shown = "VOID" if p["result"] == "CANCELLED" else p["result"]
+            raise ValueError(f"{pick_id} is already settled ({shown}); a graded pick cannot be "
+                             f"undone")
+        if p["dispatched_at"]:
+            raise ValueError(f"{pick_id} was already dispatched to a book; it cannot be undone")
+        status = p["hitl_status"]
+        stake = float(p["kelly_units"] or 0.0)
+        if status == HITL_DECLINED:
+            problems = mandate_violations(p, *self.event_exposures(p))
+            if stake > self.available_cash() + _EPS:
+                problems.append(f"Stake {stake:.2f}u exceeds available cash "
+                                f"{self.available_cash():.2f}u")
+            if problems:
+                raise MandateViolation("cannot return to the queue: " + "; ".join(problems))
+            kind, amount = "RESERVATION_RESTORED", 0.0
+        elif status == HITL_APPROVED:
+            kind, amount = "STAKE_UNCOMMITTED", stake
+        else:
+            raise ValueError(f"{pick_id} is {status}; there is no approval or decline to undo")
+        fields: dict[str, Any] = {"hitl_status": HITL_PENDING, "signoff_by": None,
+                                  "signoff_at": None, "signoff_hash": None}
+        if note:
+            fields["hitl_reason"] = f"{p['hitl_reason'] or ''} | {note}".strip(" |")
+        db.update_pick(self.conn, pick_id, **fields)
+        self._journal(pick_id, kind, amount)
+        return db.get_pick(self.conn, pick_id)  # type: ignore[return-value]
+
     def resize_position(self, pick_id: str, units: float) -> dict[str, Any]:
         """Reduce an open, unsigned, undispatched stake (sizing refinement only shrinks)."""
         p = self._open_pick(pick_id)
@@ -467,3 +507,12 @@ class Ledger:
             want = to_status(to_result(status))
             rows = [r for r in rows if r["status"] == want]
         return rows
+
+
+def undo_pick_decision(conn: sqlite3.Connection, pick_id: str,
+                       note: str | None = None) -> dict[str, Any]:
+    """Revert an APPROVED or DECLINED open pick to PENDING_CAPTAIN_HZ (see Ledger.undo_decision)."""
+    p = db.get_pick(conn, pick_id)
+    if p is None:
+        raise KeyError(f"unknown pick {pick_id}")
+    return Ledger(conn, p["origin"]).undo_decision(pick_id, note)

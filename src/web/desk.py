@@ -6,6 +6,7 @@ refuse:
 
     approve      orchestrator.sign_off      pending -> APPROVED + Captain HZ sign-off
     decline      Ledger.decline_position    -> DECLINED (no stake, no exposure)
+    undo         Ledger.undo_decision       APPROVED / DECLINED -> PENDING_CAPTAIN_HZ
     slate        open picks for today, grouped NBA / NFL (empty sports omitted)
     tracker      official picks only: APPROVED *and* signed off by Captain HZ
     discord      markdown for the signed-off open card, written to OUTBOX
@@ -27,8 +28,8 @@ from pathlib import Path
 from typing import Any
 
 from src.core import database as db
-from src.core.engine import HITL_APPROVED, HITL_PENDING
-from src.core.ledger import Ledger
+from src.core.engine import HITL_APPROVED, HITL_DECLINED, HITL_PENDING
+from src.core.ledger import Ledger, undo_pick_decision
 from src.core.orchestrator import OPERATOR, quantitative_filter_reasons, sign_off
 from src.core.prop_model import PROP_MARKETS, is_prop_market
 from src.data.teams import SPORT_TO_LEAGUE
@@ -119,6 +120,10 @@ def pick_view(p: dict[str, Any], now: datetime | None = None) -> dict[str, Any]:
                   else round(float(projection) - float(p["line_point"]), 2)),
         "z": a.get("z"), "result": p.get("result"), "net_units": p.get("net_units"),
         "settled_at": p.get("settled_at"), "clv_percent": p.get("clv_percent"),
+        "undoable": (p.get("result") == "UNSETTLED" and not p.get("dispatched_at")
+                     and (p.get("hitl_status") == HITL_DECLINED
+                          or (p.get("hitl_status") == HITL_APPROVED
+                              and bool(p.get("signoff_at"))))),
     }
 
 
@@ -156,6 +161,8 @@ def slate(conn: sqlite3.Connection, origin: str, now: datetime | None = None) ->
             "queue": len(mine) - len(signed), "signed": len(signed),
             "signed_units": round(sum(v["units"] for v in signed), 2),
         })
+    declined = db.fetch_picks(conn, "origin = ? AND hitl_status = ? AND result = 'UNSETTLED' "
+                                    "AND commence_time >= ?", (origin, HITL_DECLINED, since))
     stale = conn.execute(f"SELECT COUNT(*) FROM ledger_picks WHERE origin = ? AND {OPEN_SQL} "
                          f"AND commence_time < ?", (origin, since)).fetchone()[0]
     return {
@@ -163,6 +170,7 @@ def slate(conn: sqlite3.Connection, origin: str, now: datetime | None = None) ->
         "queue_count": sum(s["queue"] for s in sports),
         "signed_count": sum(s["signed"] for s in sports),
         "stale_open": int(stale),
+        "declined": [pick_view(r, now) for r in declined],
     }
 
 
@@ -198,6 +206,18 @@ def decline(conn: sqlite3.Connection, pick_id: str, now: datetime | None = None
     ts = db.iso(now or db.utcnow())
     try:
         p = Ledger(conn, p["origin"]).decline_position(pick_id, f"Declined by {OPERATOR} {ts}")
+    except ValueError as exc:
+        raise DeskError(str(exc)) from exc
+    return pick_view(p, now)
+
+
+def undo(conn: sqlite3.Connection, pick_id: str, now: datetime | None = None
+         ) -> dict[str, Any]:
+    """Pull an approved or declined open pick back into the Captain HZ queue."""
+    _require(conn, pick_id)
+    ts = db.iso(now or db.utcnow())
+    try:
+        p = undo_pick_decision(conn, pick_id, f"Undone by {OPERATOR} {ts}")
     except ValueError as exc:
         raise DeskError(str(exc)) from exc
     return pick_view(p, now)

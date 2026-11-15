@@ -46,9 +46,13 @@
         <h1 id="slate-h">9:00 AM Desk Slate</h1>
         <p class="col-note" id="slate-note">Captain HZ sign-off queue</p>
       </div>
-      <p class="keys">Keys: <kbd>J</kbd>/<kbd>K</kbd> move, <kbd>A</kbd> approve, <kbd>D</kbd> decline.</p>
+      <p class="keys">Keys: <kbd>J</kbd>/<kbd>K</kbd> move, <kbd>A</kbd> approve, <kbd>D</kbd> decline, <kbd>Z</kbd> undo the last one.</p>
       <div id="stale" class="notice" hidden></div>
       <div id="sports"></div>
+      <details class="declined" id="declined" hidden>
+        <summary>Declined today (<span id="declined-n">0</span>)</summary>
+        <ol class="hist" id="declined-list"></ol>
+      </details>
     </section>
 
     <aside class="ledger" aria-labelledby="ledger-h">
@@ -83,7 +87,10 @@
     <p>Straight singles only. Game lines size at quarter-Kelly up to 2.00u; official player props are 1.00u flat. Per game: 2.0u game lines, 2.0u props, 4.0u combined. Pass if juice moves past -130.</p>
   </footer>
 
-  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden>
+    <span id="toast-msg"></span>
+    <button type="button" class="btn btn-undo" id="toast-undo" hidden>Undo <kbd>Z</kbd></button>
+  </div>
   <script src="/static/app.js"></script>
 </body>
 </html>

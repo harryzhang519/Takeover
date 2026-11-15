@@ -2,7 +2,8 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const state = { status: null, slate: null, tracker: null, busy: false, focus: 0, polling: null };
+const state = { status: null, slate: null, tracker: null, busy: false, focus: 0, polling: null,
+  lastAction: null };
 
 // ------------------------------------------------------------------ helpers
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => (
@@ -38,13 +39,14 @@ async function api(path, opts = {}) {
 }
 
 let toastTimer = null;
-function toast(msg, bad = false) {
+function toast(msg, bad = false, undoable = false) {
   const t = $("toast");
-  t.textContent = msg;
+  $("toast-msg").textContent = msg;
+  $("toast-undo").hidden = !undoable;
   t.classList.toggle("bad", bad);
   t.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { t.hidden = true; }, bad ? 7000 : 3500);
+  toastTimer = setTimeout(() => { t.hidden = true; }, undoable ? 8000 : bad ? 7000 : 3500);
 }
 
 // ------------------------------------------------------------------ scoreboard
@@ -112,7 +114,8 @@ function ticket(v) {
   const why = v.hitl_reason
     ? `<p class="t-why">${injury ? '<span class="flag">[Injury] </span>' : ""}${esc(v.hitl_reason)}</p>` : "";
   const act = v.signed
-    ? `<span class="stamp">Signed &middot; Captain HZ</span>`
+    ? `<div class="signed-row"><span class="stamp">Signed &middot; Captain HZ</span>
+         ${v.undoable ? '<button type="button" class="btn btn-undo" data-act="undo">Undo</button>' : ""}</div>`
     : `<div class="t-act">
          <button type="button" class="btn btn-approve" data-act="approve">Approve ${units(v.units)}</button>
          <button type="button" class="btn btn-decline" data-act="decline">Decline</button>
@@ -139,6 +142,13 @@ function pillar(title, picks, solo) {
     ${picks.map(ticket).join("")}</div>`;
 }
 
+function renderDeclined(list) {
+  const box = $("declined");
+  box.hidden = !list.length;
+  $("declined-n").textContent = list.length;
+  $("declined-list").innerHTML = list.map((v) => histItem(v, "DECLINED")).join("");
+}
+
 function renderSlate() {
   const sl = state.slate;
   const box = $("sports");
@@ -151,6 +161,7 @@ function renderSlate() {
   stale.textContent = sl.stale_open
     ? `${sl.stale_open} open pick${sl.stale_open === 1 ? " is" : "s are"} from earlier slates and waiting on final scores. Settle final scores to grade them.`
     : "";
+  renderDeclined(sl.declined || []);
   if (!sl.sports.length) {
     box.innerHTML = `<div class="empty"><h2>No actionable picks today</h2>
       <p>Nothing on the ${sl.origin === "MOCK" ? "mock" : "live"} slate cleared the model gate yet.
@@ -209,16 +220,19 @@ function renderCurve(points) {
 
 function badge(result) {
   const map = { WIN: ["WIN", "b-win"], LOSS: ["LOSS", "b-loss"], PUSH: ["PUSH", "b-void"],
-    CANCELLED: ["VOID", "b-void"], UNSETTLED: ["OPEN", "b-open"] };
+    CANCELLED: ["VOID", "b-void"], UNSETTLED: ["OPEN", "b-open"], DECLINED: ["PASS", "b-declined"] };
   const [txt, cls] = map[result] || [result, "b-open"];
   return `<span class="badge ${cls}">${txt}</span>`;
 }
 
-function histItem(v) {
+function histItem(v, badgeKey = v.result) {
   const when = v.settled_at || v.commence_time;
-  const net = v.result === "UNSETTLED" ? units(v.units)
-    : `<span class="${tone(v.net_units)}">${signed(v.net_units, 2, "u")}</span>`;
-  return `<li>${badge(v.result)}
+  const undo = v.undoable
+    ? `<button type="button" class="btn btn-undo" data-act="undo" data-id="${esc(v.pick_id)}"
+         aria-label="Undo ${esc(v.label)}">Undo</button>` : "";
+  const net = (v.result === "UNSETTLED" ? `<span>${units(v.units)}</span>`
+    : `<span class="${tone(v.net_units)}">${signed(v.net_units, 2, "u")}</span>`) + undo;
+  return `<li>${badge(badgeKey)}
     <div><div class="h-label">${esc(v.label)}</div>
       <div class="h-meta">${v.league} ${odds(v.offered_american)} ${units(v.units)} ${when ? new Date(when).toLocaleDateString([], { month: "short", day: "numeric" }) : ""}</div></div>
     <div class="h-net">${net}</div></li>`;
@@ -231,9 +245,9 @@ function renderTracker() {
     + splitRow("NBA", tr.by_league.NBA) + splitRow("NFL", tr.by_league.NFL)
     + splitRow("Game lines", tr.by_kind.game) + splitRow("Player props", tr.by_kind.prop);
   renderCurve(tr.curve);
-  $("open-list").innerHTML = tr.open.length ? tr.open.map(histItem).join("")
+  $("open-list").innerHTML = tr.open.length ? tr.open.map((v) => histItem(v)).join("")
     : `<li><span class="none">No open official plays. Approved picks land here.</span></li>`;
-  $("settled-list").innerHTML = tr.settled.length ? tr.settled.slice(0, 60).map(histItem).join("")
+  $("settled-list").innerHTML = tr.settled.length ? tr.settled.slice(0, 60).map((v) => histItem(v)).join("")
     : `<li><span class="none">Nothing graded yet. Settle final scores after games end.</span></li>`;
 }
 
@@ -274,13 +288,28 @@ async function act(pickId, action) {
   state.busy = true;
   try {
     const { pick } = await api(`/api/picks/${encodeURIComponent(pickId)}/${action}`, { method: "POST" });
-    toast(action === "approve" ? `Signed off: ${pick.label}, ${units(pick.units)}` : `Declined: ${pick.label}`);
+    if (action === "undo") {
+      if (state.lastAction?.pickId === pickId) state.lastAction = null;
+      toast(`Back in the queue: ${pick.label}`);
+    } else {
+      state.lastAction = { pickId, label: pick.label };
+      toast(action === "approve" ? `Approved ${pick.label}, ${units(pick.units)}` : `Declined ${pick.label}`,
+        false, true);
+    }
     await refreshAll();
   } catch (e) {
-    toast(`Not ${action === "approve" ? "approved" : "declined"}: ${e.message}`, true);
+    const verb = { approve: "approved", decline: "declined", undo: "undone" }[action];
+    toast(`Not ${verb}: ${e.message}`, true);
   } finally {
     state.busy = false;
   }
+}
+
+function undoLast() {
+  const last = state.lastAction;
+  if (!last) { toast("Nothing to undo yet."); return; }
+  $("toast").hidden = true;
+  act(last.pickId, "undo");
 }
 
 async function startJob(kind) {
@@ -319,6 +348,13 @@ function wire() {
     const card = e.target.closest(".ticket");
     if (card) focusTicket(tickets().indexOf(card), false);
   });
+  for (const id of ["open-list", "declined-list"]) {
+    $(id).addEventListener("click", (e) => {
+      const btn = e.target.closest("button[data-act='undo']");
+      if (btn) act(btn.dataset.id, "undo");
+    });
+  }
+  $("toast-undo").addEventListener("click", undoLast);
   $("act-scan").addEventListener("click", () => startJob("scan"));
   $("act-settle").addEventListener("click", () => startJob("settle"));
   $("act-approve-all").addEventListener("click", async () => {
@@ -348,6 +384,7 @@ function wire() {
   document.addEventListener("keydown", (e) => {
     if (e.ctrlKey || e.metaKey || e.altKey || /INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) return;
     const k = e.key.toLowerCase();
+    if (k === "z") { e.preventDefault(); undoLast(); return; }
     const all = tickets();
     if (!all.length) return;
     if (k === "j" || k === "arrowdown") { e.preventDefault(); focusTicket(state.focus + 1); }

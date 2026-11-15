@@ -443,3 +443,130 @@ def test_http_jobs_and_settings(server) -> None:
     assert 0 < st["seconds_to_next_run"] <= 86400
     assert _call(base + "/api/settings", "POST", {"mode": "yolo"})[0] == 400
     assert web_server.load_settings(app.settings_path)["mode"] == "live"
+
+
+# ==========================================================================
+# Undo
+# ==========================================================================
+def _journal_net(led: Ledger, pick_id: str) -> float:
+    return round(sum(r["amount_units"] for r in led.journal(pick_id)), 4)
+
+
+def test_undo_approved_restores_pending_frees_stake_and_leaves_drop(conn) -> None:
+    led = _record(conn, _pick("PK-777777000001", units=1.5))
+    cash0, event0 = led.cash(), db.open_event_exposure(conn, "ev-nba-1")
+    desk.approve(conn, "PK-777777000001", now=NOW)
+    assert led.open_exposure() == 1.5 and led.cash() == pytest.approx(cash0 - 1.5)
+    assert "Boston Celtics -3.5" in desk.discord_drop(conn, MOCK, NOW)
+
+    v = desk.undo(conn, "PK-777777000001", now=NOW)
+    p = db.get_pick(conn, "PK-777777000001")
+    assert v["hitl_status"] == p["hitl_status"] == HITL_PENDING and not v["signed"]
+    assert (p["signoff_by"], p["signoff_at"], p["signoff_hash"]) == (None, None, None)
+    assert "Undone by Captain HZ" in p["hitl_reason"]
+    assert led.open_exposure() == 0.0                                  # committed stake freed
+    assert led.cash() == pytest.approx(cash0)
+    assert db.open_event_exposure(conn, "ev-nba-1") == event0         # no phantom exposure
+    assert led.journal("PK-777777000001")[-1]["kind"] == "STAKE_UNCOMMITTED"
+    assert _journal_net(led, "PK-777777000001") == 0.0
+    assert "No official plays signed off yet" in desk.discord_drop(conn, MOCK, NOW)
+    assert desk.tracker(conn, MOCK, NOW)["summary"]["open_count"] == 0
+    queue = desk.slate(conn, MOCK, NOW)["sports"][0]
+    assert (queue["queue"], queue["signed"]) == (1, 0)
+
+    desk.approve(conn, "PK-777777000001", now=NOW)                    # re-approve cleanly
+    assert led.open_exposure() == 1.5
+    assert _journal_net(led, "PK-777777000001") == -1.5               # one net commitment
+    assert db.open_event_exposure(conn, "ev-nba-1") == event0
+
+
+def test_undo_approved_frees_event_room_for_a_fresh_scan(conn) -> None:
+    """After undo the pick only holds a pending reservation, which a decline then releases."""
+    _record(conn, _pick("PK-777777000002", units=2.0))
+    desk.approve(conn, "PK-777777000002", now=NOW)
+    led = Ledger(conn, MOCK)
+    with pytest.raises(Exception, match="2.0u game-line cap"):
+        led.record_position(_pick("PK-777777000003", units=0.5))
+    desk.undo(conn, "PK-777777000002", now=NOW)
+    desk.decline(conn, "PK-777777000002", now=NOW)
+    assert led.record_position(_pick("PK-777777000003", units=0.5))
+
+
+def test_undo_declined_returns_pick_to_the_queue(conn) -> None:
+    _record(conn, _pick("PK-777777000004"))
+    desk.decline(conn, "PK-777777000004", now=NOW)
+    s = desk.slate(conn, MOCK, NOW)
+    assert s["sports"] == [] and [v["pick_id"] for v in s["declined"]] == ["PK-777777000004"]
+    assert s["declined"][0]["undoable"]
+    desk.undo(conn, "PK-777777000004", now=NOW)
+    s = desk.slate(conn, MOCK, NOW)
+    assert s["declined"] == []
+    assert [v["pick_id"] for v in s["sports"][0]["games"]] == ["PK-777777000004"]
+    assert s["sports"][0]["games"][0]["hitl_status"] == HITL_PENDING
+    assert db.open_event_exposure(conn, "ev-nba-1") == 1.0
+    assert Ledger(conn, MOCK).journal("PK-777777000004")[-1]["kind"] == "RESERVATION_RESTORED"
+
+
+def test_undo_declined_refused_when_event_cap_is_now_full(conn) -> None:
+    _record(conn, _pick("PK-777777000005", units=1.0))
+    desk.decline(conn, "PK-777777000005", now=NOW)
+    _record(conn, _pick("PK-777777000006", units=2.0, selection="Milwaukee Bucks"))
+    with pytest.raises(desk.DeskError, match="cannot return to the queue"):
+        desk.undo(conn, "PK-777777000005", now=NOW)
+    assert db.get_pick(conn, "PK-777777000005")["hitl_status"] == HITL_DECLINED
+
+
+@pytest.mark.parametrize("result, shown", [("WIN", "WIN"), ("LOSS", "LOSS"),
+                                           ("CANCELLED", "VOID")])
+def test_undo_blocked_once_settled(conn, result, shown) -> None:
+    led = _record(conn, _pick("PK-777777000007"))
+    desk.approve(conn, "PK-777777000007", now=NOW)
+    led.settle_position("PK-777777000007", result)
+    with pytest.raises(desk.DeskError, match=rf"already settled \({shown}\)"):
+        desk.undo(conn, "PK-777777000007", now=NOW)
+    p = db.get_pick(conn, "PK-777777000007")
+    assert p["hitl_status"] == HITL_APPROVED and p["signoff_at"]
+
+
+def test_undo_blocked_for_settled_declined_and_pending_and_dispatched(conn) -> None:
+    led = _record(conn, _pick("PK-777777000008"), _pick("PK-777777000009", event="ev-2"),
+                  _pick("PK-777777000010", event="ev-3"))
+    desk.decline(conn, "PK-777777000008", now=NOW)
+    led.settle_position("PK-777777000008", "LOSS")                 # settler shadow-graded it
+    with pytest.raises(desk.DeskError, match="already settled"):
+        desk.undo(conn, "PK-777777000008", now=NOW)
+    with pytest.raises(desk.DeskError, match="nothing|no approval"):
+        desk.undo(conn, "PK-777777000009", now=NOW)
+    desk.approve(conn, "PK-777777000010", now=NOW)
+    db.update_pick(conn, "PK-777777000010", dispatched_at=db.iso(NOW))
+    with pytest.raises(desk.DeskError, match="dispatched"):
+        desk.undo(conn, "PK-777777000010", now=NOW)
+
+
+def test_cli_undo(conn, tmp_path, capsys) -> None:
+    _record(conn, _pick("PK-777777000011"))
+    desk.approve(conn, "PK-777777000011", now=NOW)
+    path = str(tmp_path / "takeover.db")
+    assert run_pipeline.main(["--undo", "PK-777777000011", "--db", path]) == 0
+    assert "PENDING_CAPTAIN_HZ" in capsys.readouterr().out
+    assert db.get_pick(conn, "PK-777777000011")["hitl_status"] == HITL_PENDING
+    assert run_pipeline.main(["--undo", "PK-777777000011", "--db", path]) == 1
+    assert run_pipeline.main(["--undo", "PK-ffffffffffff", "--db", path]) == 1
+
+
+def test_http_undo_route_guarded_and_refreshes_drop(server) -> None:
+    app, base, _ = server
+    conn = app.connect()
+    _record(conn, _pick("PK-888888000001",
+                        commence_time=db.iso(db.utcnow() + timedelta(hours=2))))
+    conn.close()
+    _, out = _call(base + "/api/picks/PK-888888000001/approve", "POST")
+    drop = Path(out["drop_path"])
+    assert "Boston Celtics -3.5" in drop.read_text(encoding="utf-8")
+    url = base + "/api/picks/PK-888888000001/undo"
+    assert _call(url, "POST", headers={"X-Breeze-Desk": ""})[0] == 403
+    assert _call(url, "POST", headers={"Host": "evil.example"})[0] == 403
+    status, out = _call(url, "POST")
+    assert status == 200 and out["pick"]["hitl_status"] == HITL_PENDING
+    assert "Boston Celtics -3.5" not in drop.read_text(encoding="utf-8")
+    assert _call(url, "POST")[0] == 409                                # nothing left to undo

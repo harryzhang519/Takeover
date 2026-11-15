@@ -8,6 +8,7 @@
     python run_pipeline.py --settle [--mock]                  # closing lines, CLV, grading
     python run_pipeline.py --approve PICK_ID                  # Captain HZ sign-off
     python run_pipeline.py --decline PICK_ID                  # Captain HZ passes
+    python run_pipeline.py --undo PICK_ID                     # back to PENDING_CAPTAIN_HZ
     python run_pipeline.py --backtest [--include-mock]        # seeds 250 trades if empty
     python run_pipeline.py --mock --no-props                  # game lines only
     python run_pipeline.py --props                            # live props only (no games)
@@ -18,7 +19,7 @@ OUTBOX drop (<date>_drop.md) and content file (<date>_content.md) carry game
 picks and official 1.00u player props side by side.
 
 Actions combine and run in order: setup -> update-stats (+ prop stats) -> scan
--> props -> OUTBOX drop -> settle -> approve -> decline -> backtest.
+-> props -> OUTBOX drop -> settle -> approve -> decline -> undo -> backtest.
 The local web desk (python web_server.py) drives the same actions from a browser.
 Everything persists to data/takeover.db (SQLite, WAL).
 """
@@ -37,7 +38,7 @@ from src.core import database as db  # noqa: E402
 from src.core.backtester import run_backtest, seed_if_empty  # noqa: E402
 from src.core.config import bankroll_units, load_env, setup_env  # noqa: E402
 from src.core.engine import HITL_APPROVED, HITL_PENDING  # noqa: E402
-from src.core.ledger import Ledger  # noqa: E402
+from src.core.ledger import Ledger, undo_pick_decision  # noqa: E402
 from src.core.orchestrator import sign_off  # noqa: E402
 from src.core.schema_validator import load_schema, validate  # noqa: E402
 from src.data.market_fetcher import OUTPUT_PATH, IngestionError, run_scan  # noqa: E402
@@ -269,6 +270,19 @@ def do_decline(conn, pick_id: str) -> int:
     return 0
 
 
+def do_undo(conn, pick_id: str) -> int:
+    try:
+        p = undo_pick_decision(conn, pick_id, f"Undone by Captain HZ {db.iso(db.utcnow())}")
+    except KeyError:
+        print(f"ERROR: unknown pick {pick_id}", file=sys.stderr)
+        return 1
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    print(f"[undo] {pick_id} {p['selection']} -> {p['hitl_status']}")
+    return 0
+
+
 def do_backtest(conn, include_mock: bool, dirs: dict[str, Path]) -> int:
     print("\n== BACKTEST")
     bankroll = bankroll_units()
@@ -310,6 +324,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--approve", metavar="PICK_ID", help="Captain HZ approves a pending pick")
     ap.add_argument("--decline", metavar="PICK_ID",
                     help="Captain HZ passes on an open pick (hitl_status DECLINED)")
+    ap.add_argument("--undo", metavar="PICK_ID",
+                    help="Revert an open APPROVED or DECLINED pick to PENDING_CAPTAIN_HZ")
     ap.add_argument("--backtest", action="store_true", help="Run the backtester")
     ap.add_argument("--include-mock", action="store_true", help="Backtest MOCK picks too")
     ap.add_argument("--focus", default="both", choices=["both", "parlay_tax", "house_money"])
@@ -318,7 +334,7 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="[%(name)s] %(message)s", stream=sys.stdout)
 
     if not (args.setup_env or args.update_stats or args.scan or args.mock or args.settle
-            or args.approve or args.decline or args.backtest or args.props):
+            or args.approve or args.decline or args.undo or args.backtest or args.props):
         ap.print_help()
         return 2
     if args.props and args.no_props:
@@ -361,6 +377,8 @@ def main(argv: list[str] | None = None) -> int:
             rc |= do_approve(conn, args.approve)
         if args.decline:
             rc |= do_decline(conn, args.decline)
+        if args.undo:
+            rc |= do_undo(conn, args.undo)
         if args.backtest:
             rc |= do_backtest(conn, args.include_mock, dirs)
     finally:
