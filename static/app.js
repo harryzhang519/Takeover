@@ -3,8 +3,13 @@
 
 const $ = (id) => document.getElementById(id);
 const state = { status: null, slate: null, tracker: null, busy: false, focus: 0, polling: null,
-  lastAction: null, editing: null, draft: "" };
+  lastAction: null, editing: null, draft: "", cards: [] };
 const SOURCE_LABEL = { ollama: "Written by Ollama", template: "Desk template", edited: "Edited by you" };
+const TIER = {
+  FREE: { name: "Free play", card: "free card", cls: "tier-free", other: "PREMIUM" },
+  PREMIUM: { name: "Premium", card: "premium card", cls: "tier-premium", other: "FREE" },
+};
+const tierChip = (t) => (TIER[t] ? `<span class="tier ${TIER[t].cls}">${TIER[t].name}</span>` : "");
 
 // ------------------------------------------------------------------ helpers
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => (
@@ -61,6 +66,12 @@ function renderBoard() {
   roi.className = s ? tone(s.roi_percent) : "";
   $("k-record").textContent = s ? s.record : "--";
   $("k-winrate").textContent = s && s.win_rate != null ? `${s.win_rate.toFixed(1)}%` : "--";
+  $("k-winrate-n").textContent = s ? `${s.picks} settled pick${s.picks === 1 ? "" : "s"}` : "";
+  const clv = $("k-clv");
+  clv.textContent = s && s.clv_avg != null ? signed(s.clv_avg, 2, "%") : "--";
+  clv.className = s ? tone(s.clv_avg) : "";
+  $("k-clv-n").textContent = !s ? "" : s.clv_n
+    ? `${Math.round((s.clv_beat_rate * s.clv_n) / 100)} of ${s.clv_n} beat the close` : "No closing lines yet";
   $("k-open").textContent = s ? `${s.open_count} / ${units(s.open_units)}` : "--";
   const mode = state.status?.mode;
   document.querySelectorAll(".mode-btn").forEach((b) =>
@@ -114,16 +125,21 @@ function ticket(v) {
   }
   const why = v.hitl_reason
     ? `<p class="t-why">${injury ? '<span class="flag">[Injury] </span>' : ""}${esc(v.hitl_reason)}</p>` : "";
+  const move = v.tier && !v.tier_locked && TIER[v.tier]
+    ? `<button type="button" class="btn btn-undo" data-act="tier" data-tier="${TIER[v.tier].other}">Move to ${TIER[TIER[v.tier].other].card}</button>`
+    : "";
   const act = v.signed
-    ? `<div class="signed-row"><span class="stamp">Signed &middot; Captain HZ</span>
+    ? `<div class="signed-row"><span class="stamp">Signed &middot; Captain HZ</span>${tierChip(v.tier)}
+         ${move}
          ${v.undoable ? '<button type="button" class="btn btn-undo" data-act="undo">Undo</button>' : ""}</div>
        ${v.post ? postBlock(v) : ""}`
     : `<div class="t-act">
-         <button type="button" class="btn btn-approve" data-act="approve">Approve ${units(v.units)}</button>
+         <button type="button" class="btn btn-approve" data-act="approve" data-tier="FREE">Approve free ${units(v.units)}</button>
+         <button type="button" class="btn btn-premium" data-act="approve" data-tier="PREMIUM">Approve premium</button>
          <button type="button" class="btn btn-decline" data-act="decline">Decline</button>
        </div>`;
   return `<article class="ticket${v.signed ? " signed" : ""}" tabindex="0" data-id="${esc(v.pick_id)}"
-            aria-label="${esc(v.label)}, ${v.signed ? "signed off" : "awaiting sign-off"}">
+            aria-label="${esc(v.label)}, ${v.signed ? `signed off, ${TIER[v.tier]?.card || ""}` : "awaiting sign-off"}">
     <div class="stub">
       <span class="stub-units">${units(v.units)}</span>
       <span class="stub-id">${esc(v.pick_id)}</span>
@@ -213,9 +229,11 @@ function renderSlate() {
   const sl = state.slate;
   const box = $("sports");
   if (!sl) return;
+  const tc = sl.tier_counts || {};
+  const cards = sl.signed_count ? ` (free ${tc.FREE || 0}, premium ${tc.PREMIUM || 0})` : "";
   $("slate-note").textContent = sl.queue_count
-    ? `Captain HZ sign-off queue: ${sl.queue_count} waiting, ${sl.signed_count} signed`
-    : `Captain HZ sign-off queue is clear${sl.signed_count ? `, ${sl.signed_count} signed` : ""}`;
+    ? `Captain HZ sign-off queue: ${sl.queue_count} waiting, ${sl.signed_count} signed${cards}`
+    : `Captain HZ sign-off queue is clear${sl.signed_count ? `, ${sl.signed_count} signed${cards}` : ""}`;
   const stale = $("stale");
   stale.hidden = !sl.stale_open;
   stale.textContent = sl.stale_open
@@ -253,11 +271,13 @@ function focusTicket(i, move = true) {
 
 // ------------------------------------------------------------------ tracker
 function splitRow(name, a, cls = "") {
-  return `<tr class="${cls}"><td>${name}</td><td>${a.record}</td>
+  return `<tr class="${cls}"><th scope="row">${name}</th><td>${a.record}</td>
     <td>${a.win_rate == null ? "--" : a.win_rate.toFixed(1)}</td><td>${a.risked_units.toFixed(2)}</td>
     <td class="${tone(a.net_units)}">${signed(a.net_units)}</td>
-    <td class="${tone(a.roi_percent)}">${a.roi_percent == null ? "--" : signed(a.roi_percent, 1, "%")}</td></tr>`;
+    <td class="${tone(a.roi_percent)}">${a.roi_percent == null ? "--" : signed(a.roi_percent, 1, "%")}</td>
+    <td class="${tone(a.clv_avg)}">${a.clv_avg == null ? "--" : signed(a.clv_avg, 2, "%")}</td></tr>`;
 }
+const groupRow = (label) => `<tr class="grp"><th scope="rowgroup" colspan="7">${label}</th></tr>`;
 
 function renderCurve(points) {
   const el = $("curve");
@@ -294,7 +314,7 @@ function histItem(v, badgeKey = v.result) {
     : `<span class="${tone(v.net_units)}">${signed(v.net_units, 2, "u")}</span>`) + undo;
   return `<li>${badge(badgeKey)}
     <div><div class="h-label">${esc(v.label)}</div>
-      <div class="h-meta">${v.league} ${odds(v.offered_american)} ${units(v.units)} ${when ? new Date(when).toLocaleDateString([], { month: "short", day: "numeric" }) : ""}</div></div>
+      <div class="h-meta">${tierChip(v.tier)} ${v.league} ${odds(v.offered_american)} ${units(v.units)} ${when ? new Date(when).toLocaleDateString([], { month: "short", day: "numeric" }) : ""}${v.clv_percent != null ? ` <span class="${tone(v.clv_percent)}">CLV ${signed(v.clv_percent, 2, "%")}</span>` : ""}</div></div>
     <div class="h-net">${net}</div></li>`;
 }
 
@@ -302,8 +322,9 @@ function renderTracker() {
   const tr = state.tracker;
   if (!tr) return;
   $("split-body").innerHTML = splitRow("All official", tr.summary, "all")
-    + splitRow("NBA", tr.by_league.NBA) + splitRow("NFL", tr.by_league.NFL)
-    + splitRow("Game lines", tr.by_kind.game) + splitRow("Player props", tr.by_kind.prop);
+    + groupRow("Card") + splitRow("Free plays", tr.by_tier.FREE) + splitRow("Premium", tr.by_tier.PREMIUM)
+    + groupRow("Sport") + splitRow("NBA", tr.by_league.NBA) + splitRow("NFL", tr.by_league.NFL)
+    + groupRow("Market") + splitRow("Game lines", tr.by_kind.game) + splitRow("Player props", tr.by_kind.prop);
   renderCurve(tr.curve);
   $("open-list").innerHTML = tr.open.length ? tr.open.map((v) => histItem(v)).join("")
     : `<li><span class="none">No open official plays. Approved picks land here.</span></li>`;
@@ -313,9 +334,23 @@ function renderTracker() {
 
 async function loadDrop() {
   const d = await api("/api/discord-drop");
-  $("drop").textContent = d.markdown;
-  $("drop-path").textContent = `Signed-off picks only. Written to ${d.path.split(/[\\/]/).slice(-3).join("/")}`;
+  state.cards = d.cards;
+  $("cards").innerHTML = d.cards.map((c) => `<section class="card-box" aria-label="${esc(c.label)} card">
+      <div class="card-head">${tierChip(c.tier)}
+        <span class="card-path">${esc(c.path.split(/[\\/]/).slice(-2).join("/"))}</span>
+        <button type="button" class="btn btn-mini btn-copy" data-card="${c.tier}">Copy</button></div>
+      <pre class="drop">${esc(c.markdown)}</pre></section>`).join("");
   return d;
+}
+
+async function copyCard(tier) {
+  try {
+    const d = await loadDrop();
+    const card = d.cards.find((c) => c.tier === tier);
+    const ok = await copyText(card.markdown);
+    toast(ok ? `${TIER[tier].name} card copied. Signed-off picks only.`
+      : "Copy blocked by the browser. Select the card text in the ledger.", !ok);
+  } catch (e) { toast(e.message, true); }
 }
 
 // ------------------------------------------------------------------ loading
@@ -343,22 +378,27 @@ async function pollStatus() {
 }
 
 // ------------------------------------------------------------------ actions
-async function act(pickId, action) {
+async function act(pickId, action, tier) {
   if (state.busy) return;
   state.busy = true;
   try {
-    const { pick } = await api(`/api/picks/${encodeURIComponent(pickId)}/${action}`, { method: "POST" });
+    const { pick } = await api(`/api/picks/${encodeURIComponent(pickId)}/${action}`,
+      { method: "POST", body: tier ? { tier } : {} });
     if (action === "undo") {
       if (state.lastAction?.pickId === pickId) state.lastAction = null;
       toast(`Back in the queue: ${pick.label}`);
+    } else if (action === "tier") {
+      toast(`${pick.label} moved to the ${TIER[pick.tier].card}.`);
+    } else if (action === "approve") {
+      state.lastAction = { pickId, label: pick.label };
+      toast(`Approved ${pick.label}, ${units(pick.units)}, ${TIER[pick.tier].card}`, false, true);
     } else {
       state.lastAction = { pickId, label: pick.label };
-      toast(action === "approve" ? `Approved ${pick.label}, ${units(pick.units)}` : `Declined ${pick.label}`,
-        false, true);
+      toast(`Declined ${pick.label}`, false, true);
     }
     await refreshAll();
   } catch (e) {
-    const verb = { approve: "approved", decline: "declined", undo: "undone" }[action];
+    const verb = { approve: "approved", decline: "declined", undo: "undone", tier: "moved" }[action];
     toast(`Not ${verb}: ${e.message}`, true);
   } finally {
     state.busy = false;
@@ -404,7 +444,7 @@ function wire() {
     if (!btn) return;
     const card = btn.closest(".ticket");
     state.focus = tickets().indexOf(card);
-    act(card.dataset.id, btn.dataset.act);
+    act(card.dataset.id, btn.dataset.act, btn.dataset.tier);
   });
   $("sports").addEventListener("input", (e) => {
     if (e.target.classList.contains("post-edit")) state.draft = e.target.value;
@@ -441,12 +481,11 @@ function wire() {
       await refreshAll();
     } catch (e) { toast(e.message, true); } finally { state.busy = false; }
   });
-  $("act-copy").addEventListener("click", async () => {
-    try {
-      const d = await loadDrop();
-      const ok = await copyText(d.markdown);
-      toast(ok ? "Discord drop copied. Signed-off picks only." : "Copy blocked by the browser. Select the drop text below.", !ok);
-    } catch (e) { toast(e.message, true); }
+  $("act-copy-free").addEventListener("click", () => copyCard("FREE"));
+  $("act-copy-premium").addEventListener("click", () => copyCard("PREMIUM"));
+  $("cards").addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-card]");
+    if (btn) copyCard(btn.dataset.card);
   });
   document.querySelectorAll(".mode-btn").forEach((b) => b.addEventListener("click", async () => {
     try {
@@ -463,9 +502,17 @@ function wire() {
     if (!all.length) return;
     if (k === "j" || k === "arrowdown") { e.preventDefault(); focusTicket(state.focus + 1); }
     else if (k === "k" || k === "arrowup") { e.preventDefault(); focusTicket(state.focus - 1); }
-    else if (k === "a" || k === "d") {
+    else if (k === "a" || k === "p" || k === "d") {
       const card = all[state.focus];
-      if (card && !card.classList.contains("signed")) act(card.dataset.id, k === "a" ? "approve" : "decline");
+      if (!card || card.classList.contains("signed")) return;
+      if (k === "d") act(card.dataset.id, "decline");
+      else act(card.dataset.id, "approve", k === "p" ? "PREMIUM" : "FREE");
+    } else if (k === "t") {
+      const card = all[state.focus];
+      const v = card && findPick(card.dataset.id);
+      if (!v?.tier) return;
+      if (v.tier_locked) { toast(`${v.label} has started; its card is locked.`, true); return; }
+      act(v.pick_id, "tier", TIER[v.tier].other);
     }
   });
 }

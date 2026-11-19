@@ -26,7 +26,8 @@
       <div class="kpi kpi-lead"><dt>Net units</dt><dd id="k-net">--</dd></div>
       <div class="kpi"><dt>ROI</dt><dd id="k-roi">--</dd></div>
       <div class="kpi"><dt>Record W-L-V</dt><dd id="k-record">--</dd></div>
-      <div class="kpi"><dt>Win rate</dt><dd id="k-winrate">--</dd></div>
+      <div class="kpi"><dt>Win rate</dt><dd id="k-winrate">--</dd><p class="kpi-sub" id="k-winrate-n"></p></div>
+      <div class="kpi"><dt>Avg CLV</dt><dd id="k-clv">--</dd><p class="kpi-sub" id="k-clv-n"></p></div>
       <div class="kpi"><dt>Open risk</dt><dd id="k-open">--</dd></div>
       <div class="kpi kpi-clock"><dt>Next 9:00 AM scan</dt><dd id="k-next">--:--:--</dd></div>
     </dl>
@@ -35,7 +36,8 @@
       <button type="button" class="btn btn-go" id="act-scan">Run 9:00 scan now</button>
       <button type="button" class="btn" id="act-settle">Settle final scores</button>
       <button type="button" class="btn" id="act-approve-all">Approve all qualified</button>
-      <button type="button" class="btn" id="act-copy">Copy Discord drop</button>
+      <button type="button" class="btn" id="act-copy-free">Copy free card</button>
+      <button type="button" class="btn" id="act-copy-premium">Copy premium card</button>
     </div>
     <p class="ticker" id="ticker" role="status" aria-live="polite">Loading the desk.</p>
   </header>
@@ -46,7 +48,7 @@
         <h1 id="slate-h">9:00 AM Desk Slate</h1>
         <p class="col-note" id="slate-note">Captain HZ sign-off queue</p>
       </div>
-      <p class="keys">Keys: <kbd>J</kbd>/<kbd>K</kbd> move, <kbd>A</kbd> approve, <kbd>D</kbd> decline, <kbd>Z</kbd> undo the last one.</p>
+      <p class="keys">Keys: <kbd>J</kbd>/<kbd>K</kbd> move, <kbd>A</kbd> approve as a free play, <kbd>P</kbd> approve for premium, <kbd>T</kbd> switch a signed pick's card, <kbd>D</kbd> decline, <kbd>Z</kbd> undo the last one.</p>
       <div id="stale" class="notice" hidden></div>
       <div id="sports"></div>
       <details class="declined" id="declined" hidden>
@@ -62,7 +64,7 @@
       </div>
 
       <table class="split" aria-label="Performance by segment">
-        <thead><tr><th scope="col">Segment</th><th scope="col">W-L-V</th><th scope="col">Win %</th><th scope="col">Risked</th><th scope="col">Net</th><th scope="col">ROI</th></tr></thead>
+        <thead><tr><th scope="col">Segment</th><th scope="col">W-L-V</th><th scope="col">Win %</th><th scope="col">Risked</th><th scope="col">Net</th><th scope="col">ROI</th><th scope="col"><abbr title="Average closing line value">CLV</abbr></th></tr></thead>
         <tbody id="split-body"></tbody>
       </table>
 
@@ -77,9 +79,9 @@
       <h3 class="sub-h">Settled</h3>
       <ol class="hist" id="settled-list"></ol>
 
-      <h3 class="sub-h">Discord drop</h3>
-      <p class="col-note" id="drop-path">Signed-off picks only.</p>
-      <pre class="drop" id="drop"></pre>
+      <h3 class="sub-h">Discord cards</h3>
+      <p class="col-note">Signed-off open picks only, one card per audience.</p>
+      <div id="cards"></div>
     </aside>
   </main>
 

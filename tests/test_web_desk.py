@@ -243,13 +243,14 @@ def test_discord_drop_lists_only_signed_off_open_picks(conn, tmp_path) -> None:
     assert "**Celtics -3.5** (1.00u)" in md and "**Jayson Tatum Over 27.5 Pts** (1.00u)" in md
     assert "**Bucks" not in md                                         # declined: not posted
     assert "MOCK DESK" in md and md.count("@everyone") == 2
-    path = desk.write_discord_drop(conn, MOCK, tmp_path / "drops", NOW)
-    assert path.name.endswith("_approved_drop_mock.md")
-    assert path.read_text(encoding="utf-8") == md
+    paths = desk.write_discord_drop(conn, MOCK, tmp_path / "drops", NOW)
+    assert paths["FREE"].name.endswith("_free_card_mock.md")
+    assert paths["PREMIUM"].name.endswith("_premium_card_mock.md")
+    assert paths["FREE"].read_text(encoding="utf-8") == md
 
 
 def test_discord_drop_empty_card(conn) -> None:
-    assert "No official plays signed off yet" in desk.discord_drop(conn, MOCK, NOW)
+    assert "No free play signed off yet" in desk.discord_drop(conn, MOCK, NOW)
 
 
 def test_mock_scan_approve_settle_flows_into_tracker(conn, tmp_path) -> None:
@@ -403,7 +404,8 @@ def test_http_approve_decline_slate_tracker_and_drop(server) -> None:
 
     status, out = _call(base + "/api/picks/PK-222222000001/approve", "POST")
     assert status == 200 and out["pick"]["signed"]
-    assert Path(out["drop_path"]).read_text(encoding="utf-8").count("**Celtics -3.5**") == 1
+    assert Path(out["drop_paths"]["FREE"]).read_text(encoding="utf-8").count(
+        "**Celtics -3.5**") == 1
     status, out = _call(base + "/api/picks/PK-222222000003/decline", "POST")
     assert status == 200 and out["pick"]["hitl_status"] == HITL_DECLINED
     assert _call(base + "/api/picks/PK-222222000003/approve", "POST")[0] == 409
@@ -414,7 +416,10 @@ def test_http_approve_decline_slate_tracker_and_drop(server) -> None:
     _, tr = _call(base + "/api/tracker")
     assert tr["summary"]["open_count"] == 1
     _, drop = _call(base + "/api/discord-drop")
-    assert "**Celtics -3.5**" in drop["markdown"] and "Jayson Tatum" not in drop["markdown"]
+    free, premium = drop["cards"]
+    assert (free["tier"], premium["tier"]) == ("FREE", "PREMIUM")
+    assert "**Celtics -3.5**" in free["markdown"] and "Jayson Tatum" not in free["markdown"]
+    assert "**Celtics" not in premium["markdown"]
 
     status, out = _call(base + "/api/picks/approve-all", "POST")
     assert status == 200 and [v["pick_id"] for v in out["approved"]] == ["PK-222222000002"]
@@ -468,7 +473,7 @@ def test_undo_approved_restores_pending_frees_stake_and_leaves_drop(conn) -> Non
     assert db.open_event_exposure(conn, "ev-nba-1") == event0         # no phantom exposure
     assert led.journal("PK-777777000001")[-1]["kind"] == "STAKE_UNCOMMITTED"
     assert _journal_net(led, "PK-777777000001") == 0.0
-    assert "No official plays signed off yet" in desk.discord_drop(conn, MOCK, NOW)
+    assert "No free play signed off yet" in desk.discord_drop(conn, MOCK, NOW)
     assert desk.tracker(conn, MOCK, NOW)["summary"]["open_count"] == 0
     queue = desk.slate(conn, MOCK, NOW)["sports"][0]
     assert (queue["queue"], queue["signed"]) == (1, 0)
@@ -560,7 +565,7 @@ def test_http_undo_route_guarded_and_refreshes_drop(server) -> None:
                         commence_time=db.iso(db.utcnow() + timedelta(hours=2))))
     conn.close()
     _, out = _call(base + "/api/picks/PK-888888000001/approve", "POST")
-    drop = Path(out["drop_path"])
+    drop = Path(out["drop_paths"]["FREE"])
     assert "**Celtics -3.5**" in drop.read_text(encoding="utf-8")
     url = base + "/api/picks/PK-888888000001/undo"
     assert _call(url, "POST", headers={"X-Breeze-Desk": ""})[0] == 403

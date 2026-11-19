@@ -50,6 +50,7 @@ from src.core.ledger import (
     mandate_violations,
 )
 from src.core.risk import implied_estimation_sigma, size_bet_under_uncertainty
+from src.core.tiers import normalize_tier
 
 log = logging.getLogger("breeze.floor")
 
@@ -120,15 +121,18 @@ def captain_hz_approval_gate(pick: dict[str, Any]) -> bool:
 
 
 def sign_off(conn: sqlite3.Connection, pick_id: str, operator: str = OPERATOR,
-             now: datetime | None = None) -> dict[str, Any]:
+             now: datetime | None = None, tier: str | None = None) -> dict[str, Any]:
     """Record Captain HZ's explicit sign-off on a qualified pick.
 
     Pending picks are approved through the ledger first (committing the stake
-    against bankroll and event caps). Raises ValueError if the pick fails the
-    quantitative filters, PermissionError for any operator but Captain HZ.
+    against bankroll and event caps). ``tier`` (free / premium, default free)
+    picks the Discord card it goes to. Raises ValueError if the pick fails the
+    quantitative filters or the tier is unknown, PermissionError for any
+    operator but Captain HZ.
     """
     if operator != OPERATOR:
         raise PermissionError(f"only {OPERATOR} may sign off, not {operator!r}")
+    tier = normalize_tier(tier)
     p = db.get_pick(conn, pick_id)
     if p is None:
         raise KeyError(f"unknown pick {pick_id}")
@@ -140,7 +144,7 @@ def sign_off(conn: sqlite3.Connection, pick_id: str, operator: str = OPERATOR,
         note = f"{p['hitl_reason'] or ''} | Approved by {OPERATOR} {ts}".strip(" |")
         p = Ledger(conn, p["origin"]).approve_position(pick_id, note)
     db.update_pick(conn, pick_id, signoff_by=operator, signoff_at=ts,
-                   signoff_hash=signoff_hash(p))
+                   signoff_hash=signoff_hash(p), tier=tier, tier_set_at=ts)
     return db.get_pick(conn, pick_id)  # type: ignore[return-value]
 
 

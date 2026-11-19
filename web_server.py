@@ -9,12 +9,16 @@ API (JSON):
     GET  /api/status                  mode, next 09:00 run, current/last pipeline job
     GET  /api/slate[?origin=]         today's open picks grouped NBA / NFL (empty sports omitted)
     GET  /api/tracker[?origin=]       official (signed-off) unit P/L, ROI, W-L-V, curve, history
-    GET  /api/discord-drop[?origin=]  markdown for today's signed-off card only
-    POST /api/picks/{id}/approve      Captain HZ sign-off (run_pipeline.py --approve)
+    GET  /api/discord-drop[?origin=]  today's signed-off free and premium cards (markdown)
+    POST /api/picks/{id}/approve      Captain HZ sign-off (run_pipeline.py --approve);
+                                      {"tier": "free" | "premium"}, default free
+    POST /api/picks/{id}/tier         {"tier": "free" | "premium"} moves a signed-off open pick
+                                      (locks at game time; run_pipeline.py --set-tier)
     POST /api/picks/{id}/decline      -> DECLINED (run_pipeline.py --decline)
     POST /api/picks/{id}/undo         APPROVED / DECLINED -> PENDING (run_pipeline.py --undo)
     POST /api/picks/{id}/writeup      {"text": "..."} saves an edit, {"regenerate": true} redoes it
     POST /api/picks/approve-all       sign off every qualified unsigned pick on today's slate
+                                      ({"tier": ...} picks their card, default free)
     POST /api/scan                    background: --update-stats --scan (or --mock)
     POST /api/settle                  background: --settle (grades WIN / LOSS / PUSH / VOID)
     POST /api/settings                {"mode": "live" | "mock"}
@@ -56,7 +60,8 @@ CSRF_HEADER = "X-Breeze-Desk"
 LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "[::1]"})
 MAX_BODY = 16 * 1024
 SCHEDULE_HOUR, SCHEDULE_MINUTE = 9, 0
-PICK_ACTION = re.compile(r"^/api/picks/(PK-[0-9a-f]{6,40})/(approve|decline|undo|writeup)$")
+PICK_ACTION = re.compile(
+    r"^/api/picks/(PK-[0-9a-f]{6,40})/(approve|decline|undo|writeup|tier)$")
 
 
 # ==========================================================================
@@ -115,7 +120,8 @@ class DeskApp:
         raw = (query.get("origin") or [""])[0].upper()
         return raw if raw in desk.ORIGINS else origin_for(self.mode)
 
-    def refresh_drop(self, origin: str) -> Path:
+    def refresh_drop(self, origin: str) -> dict[str, Path]:
+        """Rewrite the free and premium cards in OUTBOX; returns {tier: path}."""
         conn = self.connect()
         try:
             return desk.write_discord_drop(conn, origin, self.discord_dir)
@@ -159,8 +165,8 @@ class DeskApp:
                     return 200, desk.tracker(conn, self._origin(query))
                 if path == "/api/discord-drop":
                     origin = self._origin(query)
-                    return 200, {"origin": origin, "markdown": desk.discord_drop(conn, origin),
-                                 "path": str(desk.drop_path(self.discord_dir, origin))}
+                    return 200, {"origin": origin,
+                                 "cards": desk.discord_cards(conn, origin, self.discord_dir)}
             finally:
                 conn.close()
             raise HttpError(404, f"no route GET {path}")
@@ -173,22 +179,24 @@ class DeskApp:
             try:
                 if action == "writeup":
                     view = self._writeup(conn, pick_id, body)
+                elif action == "approve":
+                    view = desk.approve(conn, pick_id, tier=self._tier(body, required=False))
+                elif action == "tier":
+                    view = desk.change_tier(conn, pick_id, self._tier(body, required=True))
                 else:
-                    act = {"approve": desk.approve, "decline": desk.decline,
-                           "undo": desk.undo}[action]
-                    view = act(conn, pick_id)
+                    view = {"decline": desk.decline, "undo": desk.undo}[action](conn, pick_id)
             finally:
                 conn.close()
-            drop = self.refresh_drop(view["origin"])
-            return 200, {"pick": view, "drop_path": str(drop)}
+            return 200, {"pick": view, "drop_paths": self._paths(self.refresh_drop(view["origin"]))}
         if path == "/api/picks/approve-all":
             origin = self._origin(query)
             conn = self.connect()
             try:
-                out = desk.approve_all_qualified(conn, origin)
+                out = desk.approve_all_qualified(conn, origin,
+                                                 tier=self._tier(body, required=False))
             finally:
                 conn.close()
-            out["drop_path"] = str(self.refresh_drop(origin))
+            out["drop_paths"] = self._paths(self.refresh_drop(origin))
             return 200, out
         if path in ("/api/scan", "/api/settle"):
             mode = body.get("mode") or self.mode
@@ -209,6 +217,19 @@ class DeskApp:
                                                    "mode": mode})
             return 200, self.status()
         raise HttpError(404, f"no route POST {path}")
+
+    @staticmethod
+    def _tier(body: dict[str, Any], required: bool) -> str | None:
+        tier = body.get("tier")
+        if tier is None and not required:
+            return None
+        if not isinstance(tier, str) or tier.strip().upper() not in desk.TIERS:
+            raise HttpError(400, 'send {"tier": "free"} or {"tier": "premium"}')
+        return tier
+
+    @staticmethod
+    def _paths(paths: dict[str, Path]) -> dict[str, str]:
+        return {tier: str(path) for tier, path in paths.items()}
 
     @staticmethod
     def _writeup(conn: sqlite3.Connection, pick_id: str, body: dict[str, Any]) -> dict[str, Any]:

@@ -7,7 +7,8 @@ Turns schema-validated game opportunities and player props into markdown:
     * ``generate_prop_card``          -> official 1.00u player props
     * ``write_discord_briefs``        -> writes the unified drop to the Discord OUTBOX
     * ``discord_post``                -> one APPROVED pick as a Discord post (header + write-up)
-    * ``render_approved_drop``        -> the approved-only card (<date>_approved_drop.md)
+    * ``render_tier_card``            -> the signed-off free or premium card
+                                         (<date>_free_card.md / <date>_premium_card.md)
 
 All copy is driven by the numbers in each opportunity dict, so the text
 cannot drift from the math.
@@ -344,14 +345,26 @@ def discord_post(pick: dict, writeup: str | None = None) -> str:
     return discord_post_header(pick) + ("\n\n" + body.strip() if body.strip() else "")
 
 
-def render_approved_drop(picks: list[dict], day_label: str, mock: bool = False) -> str:
-    """The approved-only card: every signed-off pick as a Discord post, in start-time order."""
-    out = [f"# Breeze Bets - Official Card - {day_label}"]
+# How Breeze Bets describes itself: the agents build and run the desk, a human picks.
+# Keep this true to how picks are made (PRODUCT.md, Go-to-Market).
+HONEST_TAGLINE = "Built and run by an AI agent team. Every pick signed off by Captain HZ."
+
+CARD_TITLES = {"FREE": "Free Plays", "PREMIUM": "Premium Card"}
+CARD_EMPTY = {"FREE": "No free play signed off yet. No edge, no play.",
+              "PREMIUM": "No premium plays signed off yet. No edge, no play."}
+
+
+def render_tier_card(picks: list[dict], day_label: str, tier: str = "FREE",
+                     mock: bool = False) -> str:
+    """One Discord card (free or premium): its signed-off picks as posts, in start-time order."""
+    if tier not in CARD_TITLES:
+        raise ValueError(f"unknown tier {tier!r}")
+    out = [f"# Breeze Bets - {CARD_TITLES[tier]} - {day_label}"]
     if mock:
         out += ["", "> **MOCK DESK - SYNTHETIC DATA. Do not post or bet.**"]
     if not picks:
-        out += ["", "No official plays signed off yet. No edge, no play."]
-        return "\n".join(out) + "\n"
+        out += ["", CARD_EMPTY[tier]]
     for p in sorted(picks, key=lambda x: (x.get("commence_time") or "", x.get("pick_id") or "")):
         out += ["", discord_post(p)]
+    out += ["", f"_{HONEST_TAGLINE}_"]
     return "\n".join(out) + "\n"

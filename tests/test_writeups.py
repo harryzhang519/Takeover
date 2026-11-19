@@ -3,7 +3,7 @@
 Covers odds / time formatting, the post layout, grounded context extraction
 (schedule spots, injuries, matchup, pace, form, market), the Ollama path with
 its validation and fallback, approval-only triggering, the desk API and the
-<date>_approved_drop.md file. No network: Ollama is patched, everything else
+free / premium card files. No network: Ollama is patched, everything else
 lives in tmp_path.
 Run: python -m pytest tests/test_writeups.py -v
 """
@@ -39,7 +39,8 @@ from templates.discord_templates import (  # noqa: E402
     discord_post,
     eastern_start,
     post_selection,
-    render_approved_drop,
+    HONEST_TAGLINE,
+    render_tier_card,
 )
 
 MOCK = db.ORIGIN_MOCK
@@ -463,9 +464,9 @@ def test_legacy_ledger_gains_writeup_columns(tmp_path) -> None:
 
 
 # ==========================================================================
-# Approved drop file
+# Free / premium card files
 # ==========================================================================
-def test_approved_drop_renders_posts_in_start_order(nba_world, tmp_path) -> None:
+def test_free_card_renders_posts_in_start_order(nba_world, tmp_path) -> None:
     soon = _commence_soon()
     later = db.iso(db.utcnow() + timedelta(hours=5))
     _record(nba_world, _nba_game_pick(commence_time=later),
@@ -474,8 +475,8 @@ def test_approved_drop_renders_posts_in_start_order(nba_world, tmp_path) -> None
             _nba_game_pick(pick_id="PK-0a0a0a000007", event_id="ev-7", commence_time=soon))
     desk.approve(nba_world, "PK-0a0a0a000001")
     desk.approve(nba_world, "PK-0a0a0a000006")
-    path = desk.write_discord_drop(nba_world, MOCK, tmp_path / "drops")
-    md = path.read_text(encoding="utf-8")
+    paths = desk.write_discord_drop(nba_world, MOCK, tmp_path / "drops")
+    md = paths["FREE"].read_text(encoding="utf-8")
     assert md.index("**Bucks +3.5**") < md.index("**Celtics -3.5**")       # earlier tip first
     assert md.count("@everyone") == 2 and "PK-0a0a0a000007" not in md
     block = md.split("\n\n")[2]                                            # first post header
@@ -485,9 +486,16 @@ def test_approved_drop_renders_posts_in_start_order(nba_world, tmp_path) -> None
     assert "|" not in md                                                   # no tables
 
 
-def test_render_approved_drop_empty_and_mock_banner() -> None:
-    md = render_approved_drop([], "Sunday, November 15", mock=True)
-    assert "MOCK DESK" in md and "No official plays signed off yet" in md
+def test_render_tier_cards_empty_and_mock_banner() -> None:
+    free = render_tier_card([], "Sunday, November 15", "FREE", mock=True)
+    assert free.startswith("# Breeze Bets - Free Plays - Sunday, November 15")
+    assert "MOCK DESK" in free and "No free play signed off yet" in free
+    premium = render_tier_card([], "Sunday, November 15", "PREMIUM")
+    assert premium.startswith("# Breeze Bets - Premium Card") and "MOCK" not in premium
+    for md in (free, premium):
+        assert md.rstrip().endswith(f"_{HONEST_TAGLINE}_")
+    with pytest.raises(ValueError):
+        render_tier_card([], "Sunday", "VIP")
 
 
 # ==========================================================================
@@ -537,7 +545,7 @@ def test_http_edit_and_regenerate_writeup(server, nba_world) -> None:
     status, out = _post(url, {"text": "Celtics in a bounce-back spot. @everyone"})
     assert status == 200 and out["pick"]["writeup_source"] == "edited"
     assert out["pick"]["post"].endswith("\n\nCeltics in a bounce-back spot. @everyone")
-    drop = Path(out["drop_path"]).read_text(encoding="utf-8")
+    drop = Path(out["drop_paths"]["FREE"]).read_text(encoding="utf-8")
     assert "Celtics in a bounce-back spot. @everyone" in drop
 
     status, out = _post(url, {"regenerate": True})

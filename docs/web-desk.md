@@ -32,14 +32,27 @@ The desk binds to `127.0.0.1` and has no login. It answers only requests address
    - **Older picks:** open picks from earlier days aren't listed. A notice tells you to settle them instead.
 3. **Sign-off:**
    - **Approve** runs the same sign-off as `run_pipeline.py --approve`, with the same quantitative filters, event caps and bankroll check.
-   - **Decline** sets `hitl_status` to `DECLINED` (also available as `run_pipeline.py --decline PICK_ID`). The pick drops out of the queue, the exposure caps, the tracker and the Discord drop.
-   - **Approve all qualified** signs off only picks that pass every filter, and reports the rest.
+   - **Free or premium:** every sign-off also picks the Discord card the pick goes on.
+     - **Approve free** puts it on the free card; this is the default.
+     - **Approve premium** puts it on the premium card. From the CLI: `run_pipeline.py --approve PICK_ID --tier premium`.
+   - **Switching cards:** a signed pick shows its card (**Free play** or **Premium**) and a **Move to … card** button. From the CLI: `run_pipeline.py --set-tier PICK_ID --tier free|premium`.
+   - **The card locks at game time.** Once a game starts, or the pick is graded or dispatched, its card can't change, so the free and premium records can't be rearranged after the fact.
+   - **Decline** sets `hitl_status` to `DECLINED` (also available as `run_pipeline.py --decline PICK_ID`). The pick drops out of the queue, the exposure caps, the tracker and both Discord cards.
+   - **Approve all qualified** signs off only picks that pass every filter, all as free plays, and reports the rest.
    - **Undo:** every approve or decline shows an 8-second toast with an **Undo** button, and `Z` undoes your most recent one. Signed picks on the slate and in **Open official plays** keep an **Undo** button until they're settled, and **Declined today** at the bottom of the slate lists the day's passes with **Undo** on each. Undo sends the pick back to `PENDING_CAPTAIN_HZ`; it's also `run_pipeline.py --undo PICK_ID`.
    - **What undo won't do:** it refuses a pick that's already graded (WIN, LOSS, PUSH or VOID) or was dispatched to a book. A declined pick returns only if it still fits the event caps and available cash.
    - **Bankroll effect:** undoing an approval releases the committed stake back to cash. The pick goes back to holding a pending reservation, the same as before you approved it. The journal is append-only, so the reversal is a new `STAKE_UNCOMMITTED` row that cancels the `STAKE_COMMITTED` row, and approving again leaves one net commitment.
-   - **Keyboard:** `J`/`K` move between picks, `A` approves, `D` declines and `Z` undoes the last approve or decline.
-4. **Discord drop:**
-   - **When it updates:** every approve, decline, undo, write-up edit and pipeline job rewrites `OUTBOX/discord_briefs/<date>_approved_drop.md`, which holds signed-off open picks only.
+   - **Undo and the card:** undo also clears the pick's card, so the next approval chooses again.
+   - **Keyboard:**
+     - `J`/`K` move between picks.
+     - `A` approves as a free play and `P` approves for premium.
+     - `T` switches a signed pick between the free and premium cards.
+     - `D` declines.
+     - `Z` undoes the last approve or decline.
+4. **Discord cards:**
+   - **When they update:** every approve, card switch, decline, undo, write-up edit and pipeline job rewrites both cards in `OUTBOX/discord_briefs/`, which hold signed-off open picks only:
+     - `<date>_free_card.md`: the free plays, headed `Breeze Bets - Free Plays`.
+     - `<date>_premium_card.md`: the paid membership card, headed `Breeze Bets - Premium Card`.
    - **Format:** each pick is a ready-to-paste Discord post, in start-time order:
      ```text
      8:15 PM ET
@@ -48,8 +61,9 @@ The desk binds to `127.0.0.1` and has no login. It answers only requests address
 
      <2-5 sentence write-up> @everyone
      ```
-   - **Mock mode:** a mock desk writes `<date>_approved_drop_mock.md`, so it never overwrites the live card.
-   - **Copying:** **Copy Discord drop** puts the whole card on the clipboard. Each approved pick also has **Copy post**.
+   - **Footer:** each card ends with the line *Built and run by an AI agent team. Every pick signed off by Captain HZ.* That describes how picks are actually made: the agents build and run the desk, and a human chooses every pick. Keep it true if the process changes.
+   - **Mock mode:** a mock desk writes `<date>_free_card_mock.md` and `<date>_premium_card_mock.md`, so it never overwrites the live cards.
+   - **Copying:** **Copy free card** and **Copy premium card** put a whole card on the clipboard; the ledger's **Discord cards** section shows both with their own **Copy** buttons. Each approved pick also has **Copy post**.
 5. **Write-ups:** a pick gets its write-up when you approve it, through Approve, Approve all qualified or `run_pipeline.py --approve`. Pending and declined picks never get one, and Undo clears it.
    - **Where the facts come from:**
      - **The pick itself:** its ledger row and analysis, plus `live_candidates.json` / `prop_candidates.json`.
@@ -70,7 +84,9 @@ The desk binds to `127.0.0.1` and has no login. It answers only requests address
    - **ROI:** net units ÷ units risked.
    - **Win rate:** W ÷ (W + L).
    - **Record:** W-L-V, where V counts pushes and voids.
-   - **Breakdowns:** by NBA vs NFL and by game lines vs player props.
+   - **CLV (closing line value):** settlement records each pick's price against the sharp closing line. The desk shows the average CLV % and how many picks beat the close. Positive CLV over a decent sample is the best early sign of a real edge, well before the win-loss record means much. Picks without a closing line are left out.
+   - **Sample size:** the win rate shows how many settled picks it's based on.
+   - **Breakdowns:** free plays vs premium, NBA vs NFL, and game lines vs player props, each with its own record, units, ROI and CLV. A pick signed off before cards existed counts as a free play.
 
 The **Live / Mock** toggle chooses which ledger origin the desk shows and which mode the scheduled run uses. It is saved in `data/web_desk.json`.
 
@@ -91,14 +107,15 @@ The task runs `web_server.py --daily-run`. If the PC is asleep at 9:00, it runs 
 | GET | `/api/status` | Mode, next 9:00 run, current and last job |
 | GET | `/api/slate[?origin=LIVE\|MOCK]` | Today's open picks by sport (empty sports omitted) |
 | GET | `/api/tracker[?origin=]` | Unit P/L, ROI, W-L-V, curve, open and settled official picks |
-| GET | `/api/discord-drop[?origin=]` | Markdown for today's signed-off card |
-| POST | `/api/picks/{id}/approve` | Captain HZ sign-off |
+| GET | `/api/discord-drop[?origin=]` | Today's signed-off free and premium cards: `{"cards": [{"tier", "label", "markdown", "path"}, ...]}` |
+| POST | `/api/picks/{id}/approve` | Captain HZ sign-off; `{"tier": "free" \| "premium"}`, default free |
+| POST | `/api/picks/{id}/tier` | `{"tier": "free" \| "premium"}` moves a signed-off open pick (refused once the game starts) |
 | POST | `/api/picks/{id}/decline` | Mark DECLINED |
 | POST | `/api/picks/{id}/undo` | APPROVED or DECLINED back to PENDING_CAPTAIN_HZ (open picks only) |
 | POST | `/api/picks/{id}/writeup` | `{"text": "..."}` saves your edit, `{"regenerate": true}` writes a fresh one (approved picks only) |
-| POST | `/api/picks/approve-all` | Sign off every qualified unsigned pick |
+| POST | `/api/picks/approve-all` | Sign off every qualified unsigned pick (`{"tier": ...}` optional, default free) |
 | POST | `/api/scan` | Background stats + scan (`{"mode": "mock"}` optional) |
 | POST | `/api/settle` | Background settlement |
 | POST | `/api/settings` | `{"mode": "live" \| "mock"}` |
 
-The code lives in `web_server.py` (HTTP and routes), `src/web/desk.py` (slate, tracker and actions), `src/web/jobs.py` (pipeline jobs, the lock and the scheduler), `templates/writeup_generator.py` (facts, Ollama and the template voice), `templates/discord_templates.py` (the post format) and `static/` (the page). The tests are in `tests/test_web_desk.py` and `tests/test_writeups.py`.
+The code lives in `web_server.py` (HTTP and routes), `src/web/desk.py` (slate, tracker and actions), `src/core/tiers.py` (free / premium cards and the game-time lock), `src/web/jobs.py` (pipeline jobs, the lock and the scheduler), `templates/writeup_generator.py` (facts, Ollama and the template voice), `templates/discord_templates.py` (the post format) and `static/` (the page). The tests are in `tests/test_web_desk.py`, `tests/test_writeups.py` and `tests/test_tiers.py`.

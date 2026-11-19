@@ -422,7 +422,8 @@ class Ledger:
         """Revert an APPROVED or DECLINED open pick to PENDING_CAPTAIN_HZ.
 
         Only open picks (result UNSETTLED) that were never dispatched can be
-        undone. Any Discord write-up is cleared with the sign-off. The journal
+        undone. Any Discord write-up and free / premium tier are cleared with
+        the sign-off. The journal
         is append-only, so the reversal is a new row rather than a deleted one:
         an APPROVED stake gets ``STAKE_UNCOMMITTED`` (+stake), which nets its
         ``STAKE_COMMITTED`` to zero, so approving again later leaves exactly
@@ -453,6 +454,7 @@ class Ledger:
             raise ValueError(f"{pick_id} is {status}; there is no approval or decline to undo")
         fields: dict[str, Any] = {"hitl_status": HITL_PENDING, "signoff_by": None,
                                   "signoff_at": None, "signoff_hash": None,
+                                  "tier": None, "tier_set_at": None,
                                   "discord_writeup": None, "writeup_source": None}
         if note:
             fields["hitl_reason"] = f"{p['hitl_reason'] or ''} | {note}".strip(" |")

@@ -238,7 +238,7 @@ PICK_COLUMNS: tuple[str, ...] = (
     "closing_fair_prob", "clv_percent", "hitl_status", "hitl_reason", "result",
     "net_units", "origin", "settled_at", "model_prob", "analysis",
     "payout_units", "signoff_by", "signoff_at", "signoff_hash", "dispatched_at", "dispatch_ref",
-    "discord_writeup", "writeup_source",
+    "discord_writeup", "writeup_source", "tier", "tier_set_at",
 )
 
 # Columns added after the first release: (table, column, DDL type). Applied by connect().
@@ -253,7 +253,14 @@ MIGRATIONS: tuple[tuple[str, str, str], ...] = (
     ("ledger_picks", "dispatch_ref", "TEXT"),
     ("ledger_picks", "discord_writeup", "TEXT"),      # capper write-up, APPROVED picks only
     ("ledger_picks", "writeup_source", "TEXT"),       # ollama | template | edited
-)
+    ("ledger_picks", "tier_set_at", "TIMESTAMP"),     # locks at game time (src/core/tiers.py)
+    ("ledger_picks", "tier", "TEXT"),                 # FREE | PREMIUM, signed-off picks only;
+)                                                     # added last: its backfill sets tier_set_at
+
+# Before tiers existed every signed-off pick went to the free Discord, so a
+# ledger that gains the tier column files those picks under FREE.
+_TIER_BACKFILL = ("UPDATE ledger_picks SET tier = 'FREE', tier_set_at = signoff_at "
+                  "WHERE tier IS NULL AND hitl_status = 'APPROVED' AND signoff_at IS NOT NULL")
 
 
 def _ledger_ddl() -> str:
@@ -330,6 +337,8 @@ def connect(path: Path = DB_PATH) -> sqlite3.Connection:
         if column not in cols:
             with conn:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+                if (table, column) == ("ledger_picks", "tier"):
+                    conn.execute(_TIER_BACKFILL)
     return conn
 
 

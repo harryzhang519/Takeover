@@ -9,8 +9,9 @@ refuse:
     undo         Ledger.undo_decision       APPROVED / DECLINED -> PENDING_CAPTAIN_HZ
     write-ups    writeup_generator          capper blurb, generated on approval only
     slate        open picks for today, grouped NBA / NFL (empty sports omitted)
+    tier         free / premium card for a signed-off pick; locks at game time
     tracker      official picks only: APPROVED *and* signed off by Captain HZ
-    discord      markdown for the signed-off open card, written to OUTBOX
+    discord      free and premium cards of signed-off open picks, written to OUTBOX
 
 Tracker math (all in units):
     risked   = stakes of WIN + LOSS picks (a PUSH or VOID hands the stake back)
@@ -18,6 +19,9 @@ Tracker math (all in units):
     ROI %    = net / risked * 100
     win rate = W / (W + L)
     record   = W-L-V, where V counts PUSH and VOID (CANCELLED: game off / DNP)
+    CLV      = average closing line value % over settled picks that have one,
+               and the share of them that beat the close (CLV > 0)
+    splits   = by sport, by game lines vs player props, and by free vs premium
 """
 
 from __future__ import annotations
@@ -34,9 +38,18 @@ from src.core.engine import HITL_APPROVED, HITL_DECLINED, HITL_PENDING
 from src.core.ledger import Ledger, undo_pick_decision
 from src.core.orchestrator import OPERATOR, quantitative_filter_reasons, sign_off
 from src.core.prop_model import PROP_MARKETS, is_prop_market
+from src.core.tiers import (
+    DEFAULT_TIER,
+    TIER_LABELS,
+    TIERS,
+    effective_tier,
+    normalize_tier,
+    set_tier,
+    tier_locked_reason,
+)
 from src.data.teams import SPORT_TO_LEAGUE
 from templates import writeup_generator as wg
-from templates.discord_templates import discord_post, render_approved_drop
+from templates.discord_templates import discord_post, render_tier_card
 
 log = logging.getLogger("breeze.desk")
 
@@ -130,6 +143,8 @@ def pick_view(p: dict[str, Any], now: datetime | None = None) -> dict[str, Any]:
                           or (p.get("hitl_status") == HITL_APPROVED
                               and bool(p.get("signoff_at"))))),
         "writeup": p.get("discord_writeup"), "writeup_source": p.get("writeup_source"),
+        "tier": effective_tier(p),
+        "tier_locked": effective_tier(p) is not None and tier_locked_reason(p, now) is not None,
     }
 
 
@@ -171,10 +186,12 @@ def slate(conn: sqlite3.Connection, origin: str, now: datetime | None = None) ->
                                     "AND commence_time >= ?", (origin, HITL_DECLINED, since))
     stale = conn.execute(f"SELECT COUNT(*) FROM ledger_picks WHERE origin = ? AND {OPEN_SQL} "
                          f"AND commence_time < ?", (origin, since)).fetchone()[0]
+    signed_views = [v for v in views if v["signed"]]
     return {
         "origin": origin, "as_of": db.iso(now), "day_start": since, "sports": sports,
         "queue_count": sum(s["queue"] for s in sports),
         "signed_count": sum(s["signed"] for s in sports),
+        "tier_counts": {t: sum(v["tier"] == t for v in signed_views) for t in TIERS},
         "stale_open": int(stale),
         "declined": [pick_view(r, now) for r in declined],
     }
@@ -190,21 +207,42 @@ def _require(conn: sqlite3.Connection, pick_id: str) -> dict[str, Any]:
     return p
 
 
-def approve(conn: sqlite3.Connection, pick_id: str, now: datetime | None = None
-            ) -> dict[str, Any]:
-    """Captain HZ sign-off (same path as ``run_pipeline.py --approve``)."""
+def approve(conn: sqlite3.Connection, pick_id: str, now: datetime | None = None,
+            tier: str | None = None) -> dict[str, Any]:
+    """Captain HZ sign-off (same path as ``run_pipeline.py --approve``).
+
+    ``tier`` picks the card: free (the default) or premium. Approving a pick
+    that is already signed off only moves it when a different tier is named.
+    """
     p = _require(conn, pick_id)
+    try:
+        wanted = normalize_tier(tier)
+    except ValueError as exc:
+        raise DeskError(str(exc), 400) from exc
     if p["signoff_at"] and p["hitl_status"] == HITL_APPROVED:
+        if tier is not None and effective_tier(p) != wanted:
+            return change_tier(conn, pick_id, wanted, now)
         if not p["discord_writeup"]:
             p = _ensure_writeup(conn, pick_id) or p
         return with_post(pick_view(p, now))
     if p["hitl_status"] not in (HITL_PENDING, HITL_APPROVED):
         raise DeskError(f"{pick_id} is {p['hitl_status']}; cannot sign off")
     try:
-        p = sign_off(conn, pick_id, now=now)
+        p = sign_off(conn, pick_id, now=now, tier=wanted)
     except (KeyError, ValueError, PermissionError) as exc:
         raise DeskError(str(exc).strip("'\"")) from exc
     p = _ensure_writeup(conn, pick_id) or p
+    return with_post(pick_view(p, now))
+
+
+def change_tier(conn: sqlite3.Connection, pick_id: str, tier: str | None,
+                now: datetime | None = None) -> dict[str, Any]:
+    """Move a signed-off open pick between the free and premium cards (before game time)."""
+    _require(conn, pick_id)
+    try:
+        p = set_tier(conn, pick_id, tier, now)
+    except ValueError as exc:
+        raise DeskError(str(exc), 400 if "unknown tier" in str(exc) else 409) from exc
     return with_post(pick_view(p, now))
 
 
@@ -272,9 +310,11 @@ def undo(conn: sqlite3.Connection, pick_id: str, now: datetime | None = None
     return pick_view(p, now)
 
 
-def approve_all_qualified(conn: sqlite3.Connection, origin: str, now: datetime | None = None
-                          ) -> dict[str, Any]:
-    """Sign off every unsigned pick on today's slate that passes the quantitative filters."""
+def approve_all_qualified(conn: sqlite3.Connection, origin: str, now: datetime | None = None,
+                          tier: str | None = None) -> dict[str, Any]:
+    """Sign off every unsigned pick on today's slate that passes the quantitative filters.
+
+    They all go to one card: ``tier`` (default free)."""
     now = now or db.utcnow()
     approved, skipped = [], []
     for sport in slate(conn, origin, now)["sports"]:
@@ -286,7 +326,7 @@ def approve_all_qualified(conn: sqlite3.Connection, origin: str, now: datetime |
                 skipped.append({"pick_id": v["pick_id"], "reason": "; ".join(reasons)})
                 continue
             try:
-                approved.append(approve(conn, v["pick_id"], now))
+                approved.append(approve(conn, v["pick_id"], now, tier=tier))
             except DeskError as exc:
                 skipped.append({"pick_id": v["pick_id"], "reason": str(exc)})
     return {"approved": approved, "skipped": skipped}
@@ -301,11 +341,15 @@ def _agg(rows: list[dict[str, Any]]) -> dict[str, Any]:
     v = sum(r["result"] in VOID_RESULTS for r in rows)
     risked = sum(float(r["kelly_units"] or 0.0) for r in rows if r["result"] in ("WIN", "LOSS"))
     net = sum(float(r["net_units"] or 0.0) for r in rows)
+    clv = [float(r["clv_percent"]) for r in rows if r.get("clv_percent") is not None]
     return {
         "wins": w, "losses": lo, "voids": v, "record": f"{w}-{lo}-{v}",
         "risked_units": round(risked, 2), "net_units": round(net, 2),
         "roi_percent": None if risked <= 0 else round(net / risked * 100.0, 2),
         "win_rate": None if w + lo == 0 else round(w / (w + lo) * 100.0, 1),
+        "picks": len(rows), "clv_n": len(clv),
+        "clv_avg": round(sum(clv) / len(clv), 2) if clv else None,
+        "clv_beat_rate": round(sum(c > 0 for c in clv) / len(clv) * 100.0, 1) if clv else None,
     }
 
 
@@ -330,6 +374,7 @@ def tracker(conn: sqlite3.Connection, origin: str, now: datetime | None = None,
                       for lg in SPORT_ORDER},
         "by_kind": {"game": _agg([r for r in settled if not is_prop_market(r["market_type"])]),
                     "prop": _agg([r for r in settled if is_prop_market(r["market_type"])])},
+        "by_tier": {t: _agg([r for r in settled if effective_tier(r) == t]) for t in TIERS},
         "curve": curve,
         "open": [with_post(pick_view(r, now)) for r in open_rows],
         "settled": [pick_view(r, now) for r in reversed(settled[-history_limit:])],
@@ -337,10 +382,11 @@ def tracker(conn: sqlite3.Connection, origin: str, now: datetime | None = None,
 
 
 # ==========================================================================
-# Discord drop (signed-off picks only)
+# Discord cards (signed-off picks only): one free, one premium
 # ==========================================================================
-def discord_drop(conn: sqlite3.Connection, origin: str, now: datetime | None = None) -> str:
-    """Postable markdown for today's signed-off, still-open card. Nothing else gets in.
+def discord_drop(conn: sqlite3.Connection, origin: str, now: datetime | None = None,
+                 tier: str = DEFAULT_TIER) -> str:
+    """Postable markdown for one card: today's signed-off, still-open picks of ``tier``.
 
     Each pick is a Discord post: ET start, emoji + bold selection + units,
     'Book: American / Decimal', then its write-up. A pick approved before
@@ -348,29 +394,44 @@ def discord_drop(conn: sqlite3.Connection, origin: str, now: datetime | None = N
     """
     now = now or db.utcnow()
     _check_origin(origin)
+    tier = normalize_tier(tier)
     since = db.iso(local_day_start(now))
     rows = db.fetch_picks(conn, f"origin = ? AND {OFFICIAL_SQL} AND result = 'UNSETTLED' "
                                 f"AND commence_time >= ?", (origin, since))
     views = []
     for r in rows:
+        if effective_tier(r) != tier:
+            continue
         v = pick_view(r, now)
         if not v["writeup"]:
             v["writeup"] = wg.generate_writeup(conn, r, llm=lambda _prompt: None)[0]
         views.append(v)
     day = local_day_start(now).strftime("%A, %B %d").replace(" 0", " ")
-    return render_approved_drop(views, day, mock=origin == db.ORIGIN_MOCK)
+    return render_tier_card(views, day, tier, mock=origin == db.ORIGIN_MOCK)
 
 
-def drop_path(out_dir: Path, origin: str, now: datetime | None = None) -> Path:
+def drop_path(out_dir: Path, origin: str, now: datetime | None = None,
+              tier: str = DEFAULT_TIER) -> Path:
+    """<date>_free_card.md / <date>_premium_card.md (with a ``_mock`` suffix on the mock desk)."""
     day = local_day_start(now or db.utcnow()).strftime("%Y-%m-%d")
     suffix = "" if origin == db.ORIGIN_LIVE else f"_{origin.lower()}"
-    return out_dir / f"{day}_approved_drop{suffix}.md"
+    return out_dir / f"{day}_{normalize_tier(tier).lower()}_card{suffix}.md"
+
+
+def discord_cards(conn: sqlite3.Connection, origin: str, out_dir: Path,
+                  now: datetime | None = None) -> list[dict[str, Any]]:
+    """Both cards for the desk, free first: tier, label, markdown and OUTBOX path."""
+    return [{"tier": t, "label": TIER_LABELS[t], "markdown": discord_drop(conn, origin, now, t),
+             "path": str(drop_path(out_dir, origin, now, t))} for t in TIERS]
 
 
 def write_discord_drop(conn: sqlite3.Connection, origin: str, out_dir: Path,
-                       now: datetime | None = None) -> Path:
-    """Write the approved-only card next to the scan drops (a MOCK card never overwrites LIVE)."""
+                       now: datetime | None = None) -> dict[str, Path]:
+    """Write the free and premium cards to OUTBOX (a MOCK card never overwrites LIVE)."""
     out_dir.mkdir(parents=True, exist_ok=True)
-    path = drop_path(out_dir, origin, now)
-    path.write_text(discord_drop(conn, origin, now), encoding="utf-8")
-    return path
+    paths: dict[str, Path] = {}
+    for t in TIERS:
+        path = drop_path(out_dir, origin, now, t)
+        path.write_text(discord_drop(conn, origin, now, t), encoding="utf-8")
+        paths[t] = path
+    return paths

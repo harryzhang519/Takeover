@@ -16,7 +16,7 @@ web
 
 Breeze Bets will be marketed on social media as a team of AI agents working together in a 3D office (Agent Office, which lives in this repo) to find valuable straight singles on sportsbooks and prediction markets. Captain HZ chooses which of the desk's picks go to Discord. The funnel today is social media to free plays in Discord, and from there to premium.
 
-**Open question:** how much the agent team actually does in producing picks, and how the marketing describes that truthfully. Today a deterministic Python pipeline produces the picks, a local LLM drafts the write-ups and Captain HZ signs off.
+**Framing (decided):** "Built and run by an AI agent team, every pick signed off by a human." That is literally true. A deterministic Python pipeline produces candidate picks, a local LLM drafts the write-ups, the agents in the office build and run that system, and Captain HZ chooses every pick. Marketing must not claim the agents choose the picks unless the agents are actually given that job. Each Discord card ends with this line (`HONEST_TAGLINE` in `templates/discord_templates.py`).
 
 ## Product Purpose
 
@@ -33,8 +33,11 @@ Verified and math-first. The edge comes from the math: sharp de-vigging, fair-pr
 - **Daily rhythm:** at 9:00 AM the desk settles finished games, then runs a stats update and scan. The run comes from the server's scheduler or from Windows Task Scheduler (`scripts/register_breeze_9am.ps1`).
 - **Live / Mock:** a toggle switches the desk between the live ledger and the mock one. Mock runs make no network calls and write separate `_mock` outputs.
 - **Sign-off lifecycle:** a pick moves from `PENDING_CAPTAIN_HZ` to APPROVED or DECLINED. Undo is allowed until the pick is graded or dispatched. Grading is WIN / LOSS / PUSH / VOID.
-- **Outputs:** the Discord drop goes to `OUTBOX/discord_briefs/<date>_approved_drop.md`, social content to `OUTBOX/social_distribution/`, and scans to `OUTBOX/market_scans/`.
-- **Keyboard-first desk:** `J`/`K` move between picks, `A` approves, `D` declines and `Z` undoes the last one.
+- **Outputs:**
+  - **Discord cards:** the free card goes to `OUTBOX/discord_briefs/<date>_free_card.md` and the premium card to `<date>_premium_card.md`.
+  - **Social content:** `OUTBOX/social_distribution/`.
+  - **Scans:** `OUTBOX/market_scans/`.
+- **Keyboard-first desk:** `J`/`K` move between picks, `A` approves as a free play, `P` approves for premium, `T` switches a signed pick's card, `D` declines and `Z` undoes the last one.
 - **Local only:** the desk binds to `127.0.0.1`, has no login, and every POST must carry the `X-Breeze-Desk` header.
 
 ## Capabilities and Constraints
@@ -42,9 +45,12 @@ Verified and math-first. The edge comes from the math: sharp de-vigging, fair-pr
 - **Two sports, two pillars:** NBA and NFL. Game lines and player props are equal pillars.
 - **Exposure rules:** each game has caps for game lines, for player props and for both combined. Approving a pick runs a bankroll check, the same filters as `run_pipeline.py --approve`, and the event caps.
 - **Write-ups:** a local Ollama writes the first draft, with a deterministic template as the fallback. The text uses only grounded facts and never mentions the math (no models, Kelly, probabilities or percentages). Each write-up is 2 to 5 sentences, has no em dashes and ends with `@everyone`.
-- **Verified Ledger:** it counts only signed-off APPROVED picks and reports units risked, net units, ROI, win rate, W-L-V, and breakdowns by sport and by game lines vs player props.
+- **Verified Ledger:** it counts only signed-off APPROVED picks and reports units risked, net units, ROI, win rate with its sample size, W-L-V, and average closing line value (CLV) with the share of picks that beat the close. It breaks all of that down by free vs premium, by sport, and by game lines vs player props.
 - **Stack:** the desk is Python standard library only, with no build step. The page is plain HTML, CSS and JS in `static/`, and the data lives in SQLite at `data/takeover.db`.
-- **Membership tiers:** free plays and a paid premium membership. Premium pricing, delivery and what it includes are still undecided.
+- **Membership tiers:** free plays and a paid premium membership.
+  - **At sign-off:** every pick is tagged FREE (the default) or PREMIUM.
+  - **Lock:** the tier can be switched until game time, then it's fixed, so the two records stay honest.
+  - **Still undecided:** premium pricing, delivery and what it includes.
 - **Undecided:** the shape of the public surface and where it is hosted. The operator desk has no login and binds to localhost, so it can't be made public as it is.
 
 ## Brand Commitments
